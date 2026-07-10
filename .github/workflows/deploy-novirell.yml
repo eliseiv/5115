@@ -18,8 +18,10 @@
 # novirell (see ci.yml / deploy.yml headers and docs §Сервер novirell — secret migration).
 #
 # EDGE: routing is via the docker-cp'd nginx vhost (deploy/nginx/novirell.shop.conf) in mas-nginx,
-# not docker labels. TLS is the host certbot cert mounted into mas-nginx. This workflow only builds
-# + migrates + starts the stack; the vhost is provisioned once by the operator (docs runbook).
+# not docker labels. TLS is the host certbot cert mounted into mas-nginx. This workflow builds +
+# migrates + starts the stack, then attaches api to mas-net IMPERATIVELY (compose does NOT — see
+# docker-compose.novirell.yml + docs §Коллизия имён, TD-038); the vhost is provisioned once by the
+# operator (docs runbook). Compose files: -f docker-compose.prod.yml -f docker-compose.novirell.yml.
 # =============================================================================
 name: deploy-novirell
 
@@ -82,19 +84,48 @@ jobs:
               fi
               # (1) Build on the server (real build failure => fail the instance).
               echo "[deploy:$proj] build (image built on the server)"
-              if ! docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env build api migrate; then
+              if ! docker compose -p "$proj" -f docker-compose.prod.yml -f docker-compose.novirell.yml --env-file .env build api migrate; then
                 echo "::error title=build failed ($proj)::docker compose build returned non-zero"; FAILED="$FAILED $proj"; continue
               fi
               # (2) Migrate explicitly BEFORE api (real migration failure => fail the instance).
               echo "[deploy:$proj] migrate (alembic upgrade head)"
-              if ! docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env run --rm migrate; then
+              if ! docker compose -p "$proj" -f docker-compose.prod.yml -f docker-compose.novirell.yml --env-file .env run --rm migrate; then
                 echo "::error title=migrate failed ($proj)::alembic upgrade head returned non-zero"; FAILED="$FAILED $proj"; continue
               fi
               # (3) Start only (already built). rc recorded but NOT trusted; readiness gate decides.
               echo "[deploy:$proj] up -d --no-build (rc recorded, not trusted)"
               up_rc=0
-              docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env up -d --no-build || up_rc=$?
+              docker compose -p "$proj" -f docker-compose.prod.yml -f docker-compose.novirell.yml --env-file .env up -d --no-build || up_rc=$?
               echo "[deploy:$proj] up rc=$up_rc (informational)"
+              # (3b) Attach api to the SHARED edge network mas-net IMPERATIVELY (docs §Коллизия имён).
+              #      Compose does NOT attach it (docker-compose.novirell.yml detaches api from the
+              #      edge net) precisely so the generic `api` SERVICE-NAME alias never lands on
+              #      mas-net — that alias collides with the neighbour's mas-api and would let
+              #      postapp.store traffic reach us (COLLISION 2). `docker network connect` adds ONLY
+              #      the container name + our explicit --alias, never the service name (verified).
+              #      IDEMPOTENT: `up` may or may not have recreated the container; skip if already on
+              #      mas-net. Real failure => fail the instance (mas-nginx could not reach us -> 502).
+              cname="${proj}-api-1"
+              echo "[deploy:$proj] attach $cname to mas-net (imperative, idempotent)"
+              if ! docker network inspect mas-net >/dev/null 2>&1; then
+                echo "::error title=mas-net missing ($proj)::external network mas-net not found on host"; FAILED="$FAILED $proj"; continue
+              fi
+              if docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$cname" 2>/dev/null | tr ' ' '\n' | grep -qx mas-net; then
+                echo "[deploy:$proj] $cname already on mas-net — skip connect"
+              else
+                if docker network connect --alias "${proj}-api" mas-net "$cname"; then
+                  echo "[deploy:$proj] connected $cname to mas-net (alias ${proj}-api)"
+                else
+                  echo "::error title=network connect failed ($proj)::could not attach $cname to mas-net"; FAILED="$FAILED $proj"; continue
+                fi
+              fi
+              # Guard COLLISION 2: the container's mas-net Aliases MUST NOT contain the generic `api`.
+              # `with` yields nothing if mas-net is absent (no panic). Strip [] and split on space/comma.
+              mas_aliases="$(docker inspect -f '{{with index .NetworkSettings.Networks "mas-net"}}{{.Aliases}}{{end}}' "$cname" 2>/dev/null || echo)"
+              echo "[deploy:$proj] $cname mas-net aliases: $mas_aliases"
+              if printf '%s' "$mas_aliases" | tr -d '[]' | tr ' ,' '\n\n' | grep -qx api; then
+                echo "::error title=api alias leaked ($proj)::$cname carries the generic 'api' alias on mas-net (would hijack the neighbour). Aborting instance."; FAILED="$FAILED $proj"; continue
+              fi
               # (4) Readiness gate: api container health (compose healthcheck = GET /ready).
               echo "[deploy:$proj] readiness gate: api container health"
               ready=0

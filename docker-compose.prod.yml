@@ -32,9 +32,25 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     # No host port published and NOT on `web`: postgres is reachable only on the internal
-    # `default` network by service name (ADR-017 req. 4).
+    # `default` network (ADR-017 req. 4).
+    #
+    # NAME-COLLISION FIX (docs/07-deployment.md §Коллизия имён в shared external network).
+    # On the novirell server `api` is ALSO attached to the SHARED external network `mas-net`
+    # (owned by the mail-aggregator stack), which already publishes the generic aliases
+    # `postgres`/`redis` (its own mas-postgres/mas-redis). Because `api` is multi-homed, an
+    # unqualified `postgres`/`redis` from `api` resolved AMBIGUOUSLY and hit the NEIGHBOUR's DB
+    # (getent hosts postgres -> mas-postgres). We therefore give OUR postgres/redis an EXTRA,
+    # PROJECT-UNIQUE alias `${COMPOSE_PROJECT_NAME:-claude-ios}-postgres` (novirell ->
+    # `novirell-postgres`) that exists ONLY on our `default` network, and point novirell's
+    # DATABASE_URL/REDIS_URL at it (deploy/novirell.env.example) -> unambiguous resolution.
+    # BACKWARD-COMPAT: compose ALWAYS keeps the service name `postgres` as an alias too, so the
+    # legacy Traefik instances (whose .env uses host `postgres`/`redis`, and whose `web` edge net
+    # has NO colliding alias) keep working unchanged — the project-unique alias is just an unused
+    # extra there (behavioral no-op).
     networks:
-      - default
+      default:
+        aliases:
+          - ${COMPOSE_PROJECT_NAME:-claude-ios}-postgres
     healthcheck:
       # Use the CONTAINER's own env (POSTGRES_USER/POSTGRES_DB are set in `environment:` above),
       # NOT compose interpolation: `$$` makes Docker pass a literal `$`, so the shell INSIDE the
@@ -57,9 +73,12 @@ services:
     volumes:
       - redisdata:/data
     # No host port published and NOT on `web`: redis is reachable only on the internal
-    # `default` network by service name (ADR-017 req. 4).
+    # `default` network (ADR-017 req. 4). Project-unique alias for the shared-network
+    # collision fix — see the postgres block above (docs/07-deployment.md §Коллизия имён).
     networks:
-      - default
+      default:
+        aliases:
+          - ${COMPOSE_PROJECT_NAME:-claude-ios}-redis
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

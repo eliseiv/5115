@@ -1,0 +1,54 @@
+# =============================================================================
+# novirell OVERRIDE (server 49.12.189.77, shared nginx `mas-nginx`, NOT Traefik).
+# Applied ON TOP of docker-compose.prod.yml ONLY on the novirell server:
+#   docker compose -p novirell -f docker-compose.prod.yml -f docker-compose.novirell.yml \
+#                  --env-file .env <cmd>
+# The legacy Traefik instances (claude-ios/avelyra/…) do NOT use this file — they keep the
+# unchanged docker-compose.prod.yml (api on `web` + `default`). See docs/07-deployment.md
+# §Коллизия имён в shared external network.
+#
+# WHY THIS FILE EXISTS — COLLISION 2 (api hijacks the generic `api` name on mas-net):
+#   docker-compose.prod.yml attaches `api` to the edge network (`web` -> name mas-net on this
+#   server). Compose ALWAYS adds the SERVICE NAME (`api`) as a network alias and there is NO way
+#   to suppress it (verified on the server, compose 5.2.0: explicit `aliases:` do NOT replace the
+#   service-name alias). On the SHARED mas-net the neighbour already owns the alias `api`
+#   (mas-api), whose nginx routes postapp.store to `http://api:8080`. With our container also
+#   answering to `api`, that name resolved to TWO containers and the neighbour's prod traffic
+#   could be routed to us. Renaming the compose service was rejected (huge blast radius on the
+#   deterministic container name `<proj>-api-1` used by the nginx upstream + the CI readiness
+#   gate `${proj}-api-1`, on EVERY instance incl. the working legacy ones — and the renamed
+#   service name would STILL leak onto mas-net as an alias).
+#
+# FIX: DETACH `api` from the edge network in compose (below) so compose attaches it ONLY to the
+# internal `default` network — hence NO `api` alias on mas-net. The deploy workflow then attaches
+# the container to mas-net IMPERATIVELY, AFTER `up`, via:
+#     docker network connect --alias novirell-api mas-net novirell-api-1
+# `docker network connect` does NOT add the service name as an alias (verified), so on mas-net our
+# container answers ONLY to its container name `novirell-api-1` (what the nginx vhost proxies to)
+# and the explicit `novirell-api` — never to the generic `api`. See
+# .github/workflows/deploy-novirell.yml (idempotent connect step) and the provisioning runbook in
+# deploy/novirell.env.example / docs. RESIDUAL OPERATIONAL RISK (attachment is imperative, not
+# declarative; must re-run every deploy) is tracked as TD-038.
+#
+# NOTE COLLISION 1 (api resolved the neighbour's postgres/redis) is fixed SEPARATELY and does NOT
+# live here: docker-compose.prod.yml gives our postgres/redis the project-unique aliases
+# `novirell-postgres`/`novirell-redis` and deploy/novirell.env.example points DATABASE_URL/
+# REDIS_URL at them. That fix is needed regardless of this override (api stays multi-homed once
+# imperatively connected to mas-net).
+# =============================================================================
+services:
+  api:
+    # `!override` REPLACES the base list `[web, default]` (a plain override would APPEND and keep
+    # `web`). Result: api is compose-attached ONLY to `default` (internal, for postgres/redis).
+    # It joins mas-net imperatively post-`up` (deploy workflow) so it never carries the `api`
+    # service-name alias onto the shared edge network.
+    networks: !override
+      - default
+
+networks:
+  # Drop the edge network entirely on novirell: nothing references it anymore (api detached
+  # above), so `!reset null` removes the external `web`/mas-net declaration from the merged
+  # config. mas-net attachment is done imperatively by the deploy workflow, not by compose.
+  # The inert `traefik.docker.network=mas-net` label on api stays (mas-nginx does not read
+  # docker labels — it routes via the docker-cp'd vhost), harmless.
+  web: !reset null
