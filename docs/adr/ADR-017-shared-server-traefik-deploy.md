@@ -3,6 +3,7 @@
 - **Статус:** Accepted (2026-06-02; расширен 2026-06-10 разделом «Мульти-инстанс / клонирование сервиса»)
 - **Контекст ревизует:** [TD-005](../100-known-tech-debt.md) (зафиксирован VPS + Caddy-standalone). Не отменяет [ADR-001](ADR-001-stack-choice.md) (стек) и [ADR-010](ADR-010-backend-hosted-preview.md) (контракт reverse-proxy на `/v1/preview/*`).
 - **Расширение (2026-06-10):** добавлен паттерн мульти-инстанс / клонирования за общим Traefik (`COMPOSE_PROJECT_NAME`-параметризация, изоляция доменов/данных/секретов, per-instance JWT keypair). Playbook — [07-deployment.md §Мульти-инстанс](../07-deployment.md#мульти-инстанс--клонирование-сервиса). Связано с [Q-017-3](../99-open-questions.md).
+- **Соседний тип инстанса (2026-07-10, [ADR-060](ADR-060-novirell-shared-nginx-shared-network-deploy.md)):** этот ADR описывает **Traefik**-топологию (сеть `web`, docker-labels, один `-f`) — нормативную для **legacy**-инстансов (сервер `87.239.135.154`). Инстанс **novirell** (`novirell.shop`, сервер `49.12.189.77`) развёрнут за **чужим nginx** (`mas-nginx`, общая сеть `mas-net`, TLS хостового certbot, маршрут через vhost, **два `-f`**, императивный `docker network connect`) — его edge-контракт зафиксирован в [ADR-060](ADR-060-novirell-shared-nginx-shared-network-deploy.md) и **не** подпадает под §Решение п.2–4 ниже (сеть `web`/labels/Traefik). Тело ADR-017 не переписано (immutability).
 
 ## Контекст
 

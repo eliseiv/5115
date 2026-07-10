@@ -449,11 +449,12 @@ INSTANCES="claude-ios:claude-ios avelyra:avelyra orvianix:orvianix veltrio:veltr
 > **Второе, отдельное окружение.** Это НЕ замена старому серверу `87.239.135.154` (Traefik + сеть `web`, разделы выше) — оба окружения существуют и документированы параллельно. Отличается edge-слой: здесь **нет Traefik и нет `/opt/edge`**; порты 80/443 держит **чужой** контейнер `mas-nginx` (nginx, reverse-proxy стороннего сервиса mail-aggregator, `/opt/mail-agregator/`), который **ломать нельзя**. Наш сервис встраивается в этот общий nginx.
 
 ### Топология novirell
-- **Хост:** `49.12.189.77`, Ubuntu, 2 CPU, 3.8 GB RAM (≈1.3 GB уже занято mas-стеком + системой), 63 GB free. Docker 29.x, compose v5. `jq` НЕ установлен (скрипты не должны на него полагаться).
+- **Хост:** `49.12.189.77`, Ubuntu, 2 CPU, 3.8 GB RAM (≈1.3 GB уже занято mas-стеком + системой) **+ 2 GB swap** (`/swapfile`, прописан в `/etc/fstab` — переживает перезагрузку), 63 GB free. Docker 29.x, compose v5. `jq` НЕ установлен (скрипты не должны на него полагаться).
 - **Edge:** общий `mas-nginx` (nginx, из стека mail-aggregator) держит 80/443, терминирует TLS. Мы **не управляем** им как контейнером — только доставляем в него vhost-файл.
 - **Внешняя docker-сеть:** `mas-net` (НЕ `web` — сети `web` на этом сервере нет). Создана стеком mail-aggregator; `mas-nginx` — её член (адрес `172.18.0.7`). Подсеть — `172.18.0.0/16` (default bridge /16). Мы её **не создаём** (`external`, уже есть). **⚠️ Это ОБЩАЯ сеть с чужим стеком** (`mas-postgres`/`mas-redis`/`mas-api` держат в ней generic-алиасы `postgres`/`redis`/`api`) — источник **коллизии имён**, устранённой отдельно (см. [§Коллизия имён в shared external network](#коллизия-имён-в-shared-external-network-mas-net)). Наш `api` подключается к `mas-net` **императивно** в деплой-workflow (`docker network connect --alias novirell-api mas-net novirell-api-1`), **НЕ через compose**: novirell-override [`docker-compose.novirell.yml`](../docker-compose.novirell.yml) отвязывает `api` от edge-сети (compose всегда добавил бы generic-алиас `api`). `postgres`/`redis`/`migrate` — только во внутренней `default` (в `mas-net` не входят).
 - **Домен:** `novirell.shop`, DNS A-запись → `49.12.189.77` (уже есть). TLS-сертификат `/etc/letsencrypt/live/novirell.shop/` выпущен **хостовым certbot** (не ACME Traefik), смонтирован ro в `mas-nginx`, действует до 2026-09-29 (renewal — хостовый certbot + ACME-challenge через `location /.well-known/acme-challenge/`).
 - **Каталог стека:** `/opt/novirell` (наш `docker-compose.prod.yml` + `.env` + `.secrets/`). Изолирован от `/opt/mail-agregator` и от `/opt/claude-ios` (последнего на этом хосте нет).
+- **Деплой требует ДВУХ `-f`:** **все** compose-команды на novirell идут с `-f docker-compose.prod.yml -f docker-compose.novirell.yml` (второй файл — override, отвязывающий `api` от edge-сети). Один `-f` (как на legacy-сервере) здесь **неверен**: `api` получит generic service-name-алиас `api` на общей `mas-net` (COLLISION 2, перехват имени у `mas-api`). См. [§Коллизия имён](#коллизия-имён-в-shared-external-network-mas-net).
 - **Провайдер:** OpenAI-инстанс (`LLM_PROVIDER=openai` + `OPENAI_API_KEY`).
 - **ufw** активен: 22, 80, 443.
 
@@ -468,15 +469,21 @@ INSTANCES="claude-ios:claude-ios avelyra:avelyra orvianix:orvianix veltrio:veltr
 - **`location = /metrics { return 404; }`** — Prometheus-метрики на edge закрыты. Гвард приложения **fail-open**: при пустом `METRICS_SCRAPE_TOKEN` (дефолт `""`, `config.py`) `GET /metrics` отдаётся любому (`health.py:69` короткозамыкает). Скрейп идёт по docker-сети прямо в контейнер, не через публичный домен, поэтому путь режется на nginx (defense-in-depth, поведение приложения не меняется). `404`, а не `403` — не раскрываем существование эндпоинта (консистентно с тем, как приложение прячет чужие ресурсы). `/health`/`/healthz`/`/ready` остаются публичными (нужны для smoke; `/ready` тело — только `{db, redis}` без версий/DSN/хостов).
 
 #### Доставка vhost в mas-nginx (оператор)
-`mas-nginx` монтирует `/etc/nginx/conf.d/` (внутри контейнера) и `/etc/nginx/templates` (из `/opt/mail-agregator/deploy/nginx/templates`, ro). Доставка:
+**Механизм рендера конфигов (важно для durability).** `mas-nginx` — стандартный образ nginx: его entrypoint при **КАЖДОМ старте контейнера** прогоняет `envsubst` по шаблонам `/etc/nginx/templates/*.template` и пишет результат в `/etc/nginx/conf.d/*` (срезая суффикс `.template`). Ключевое различие двух каталогов:
+- `/etc/nginx/templates` — **bind-mount** из хостового `/opt/mail-agregator/deploy/nginx/templates` (ro; ЧУЖОЙ каталог mail-aggregator, НЕ в нашем репо). Файлы в нём **персистентны на хосте**.
+- `/etc/nginx/conf.d/` — **слой образа**, НЕ bind-mount. Он **пересобирается из templates при каждом старте** (envsubst), поэтому любые правки прямо в нём **эфемерны**.
+
+Следствие: доставка требует **ДВУХ шагов** (оба выполнены на novirell):
 ```
-# PRIMARY (быстро, немедленно активно):
+# PRIMARY (активно НЕМЕДЛЕННО, но живёт лишь до пересоздания контейнера mas-nginx):
 docker cp deploy/nginx/novirell.shop.conf mas-nginx:/etc/nginx/conf.d/novirell.shop.conf
 docker exec mas-nginx nginx -t && docker exec mas-nginx nginx -s reload
-# DURABILITY (переживает recreate mas-nginx, который перемонтирует templates):
+# DURABILITY (переживает recreate: envsubst ре-рендерит templates -> conf.d на каждом старте):
 #   тот же контент положить в /opt/mail-agregator/deploy/nginx/templates/novirell.shop.conf.template
-#   (ЧУЖОЙ каталог mail-aggregator — НЕ в нашем репо; канонический источник — deploy/nginx/novirell.shop.conf).
+#   (канонический источник — deploy/nginx/novirell.shop.conf в нашем репо; .template — копия в чужом каталоге).
 ```
+**Почему `docker cp` в `conf.d` недостаточно:** `conf.d` — слой образа, а не том. При `recreate` контейнера `mas-nginx` (перезапуск/обновление стека mail-aggregator) `conf.d` сбрасывается к состоянию образа и **ре-рендерится из templates** — файл, положенный только через `docker cp`, **пропадёт**, и `novirell.shop` начнёт отдавать `502`. Durable-путь установки vhost — **файл-шаблон в bind-mount `templates`**; `docker cp` даёт лишь немедленную активацию до следующего рендера. (Как у стандартного nginx-образа, `envsubst` подставляет только `${VAR}`/`$VAR`, совпадающие с **переменными окружения** контейнера; nginx-рантайм-переменные vhost — `$host`/`$remote_addr`/`$upstream`/`$request_uri` — в окружении не заданы и остаются как есть.)
+
 Бэкап прежнего (удалённого) vhost — `/root/sms-agreagtor-backup-*/novirell.shop.conf.orig` (до этой миграции домен отдавал 502, upstream указывал на удалённый `sms-aggregator-app`).
 
 ### Имя контейнера api (novirell)
@@ -554,7 +561,7 @@ docker inspect -f '{{(index .NetworkSettings.Networks "mas-net").Aliases}}' novi
 8. **Верификация:** `curl -fsS https://novirell.shop/healthz` → `200`; `docker inspect novirell-api-1 --format '{{.State.Health.Status}}'` → `healthy`; **api в mas-net без алиаса `api`** — `docker inspect -f '{{(index .NetworkSettings.Networks "mas-net").Aliases}}' novirell-api-1` → `[novirell-api]` (НИКОГДА `api`); mas-стек не затронут (`docker ps` — контейнеры `mas-*` живы, `postapp.store` резолвит только `mas-api`).
 9. **Откат:** как в [§Откат](#откат), но `-p novirell` в `/opt/novirell` (образ собирается на сервере, `git checkout <prev-commit>` + rebuild).
 
-> **RAM-риск (см. также prod-checklist).** 3.8 GB RAM, ≈1.3 GB занято mas-стеком + системой, плюс пик при `docker compose build` на самом сервере (старый `api` ещё жив). Наш стек добавляет postgres + redis + api. **Митигация внедрена:** число gunicorn-воркеров вынесено в env `GUNICORN_WORKERS` (Dockerfile CMD переведён на `sh -c … -w ${GUNICORN_WORKERS:-4}`, дефолт `4` = прежнее поведение legacy-инстансов; `exec` сохраняет gunicorn как PID 1 для graceful SIGTERM), и в `deploy/novirell.env.example` задано `GUNICORN_WORKERS=2`. При 2 воркерах api ≈ 0.3–0.6 GB, postgres+redis ≈ 0.2–0.4 GB → запас достаточный. DB-пул пересчитан: `(10+5)*2 = 30 < max_connections(100)` (комфортно). Доп. митигация при необходимости: **мониторить** `docker stats`/OOM на старте; добавить **swap** (63 GB диска free).
+> **RAM-риск (см. также prod-checklist).** 3.8 GB RAM, ≈1.3 GB занято mas-стеком + системой, плюс пик при `docker compose build` на самом сервере (старый `api` ещё жив). Наш стек добавляет postgres + redis + api. **Митигация внедрена:** число gunicorn-воркеров вынесено в env `GUNICORN_WORKERS` (Dockerfile CMD переведён на `sh -c … -w ${GUNICORN_WORKERS:-4}`, дефолт `4` = прежнее поведение legacy-инстансов; `exec` сохраняет gunicorn как PID 1 для graceful SIGTERM), и в `deploy/novirell.env.example` задано `GUNICORN_WORKERS=2`. При 2 воркерах api ≈ 0.3–0.6 GB, postgres+redis ≈ 0.2–0.4 GB → запас достаточный. DB-пул пересчитан: `(10+5)*2 = 30 < max_connections(100)` (комфортно). **Swap добавлен (внедрено):** 2 GB swapfile `/swapfile`, прописан в `/etc/fstab` (переживает перезагрузку) — страховка от OOM при пиковой сборке образа на хосте (`docker compose build` идёт на самом сервере, старый `api` в этот момент ещё жив). Доп. митигация при необходимости: **мониторить** `docker stats`/OOM на старте (диск: 63 GB free).
 
 ## Миграции
 - Alembic. `uv run alembic upgrade head` в `migrate`-job (`docker compose run --rm migrate`) до старта `api`.
