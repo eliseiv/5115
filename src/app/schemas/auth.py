@@ -35,7 +35,7 @@ class RefreshRequest(StrictModel):
 
 
 class AppleSignInRequest(StrictModel):
-    """Sign in with Apple request (ADR-043, auth/02). identityToken/nonce are never logged."""
+    """Sign in with Apple request. identityToken/nonce are never logged."""
 
     identityToken: str = Field(
         min_length=1,

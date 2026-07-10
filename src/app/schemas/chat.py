@@ -49,12 +49,12 @@ class AttachmentIn(StrictModel):
 
 
 class TemporaryTurn(StrictModel):
-    """Одна реплика клиентского транскрипта временного чата (ADR-056 §1).
+    """Одна реплика клиентского транскрипта временного чата.
 
     Провайдер-агностичный текст: клиент присылает только роль и текст, НЕ wire-формат провайдера
     (content-блоки Anthropic vs items OpenAI). Оркестратор сам собирает из транскрипта сообщения
     для активного клиента. Только `user`/`assistant` — сырые `tool_use`/`tool_result` не
-    принимаются (непарный `tool_use` → 400 от провайдера, BUG-5 / ADR-021).
+    принимаются (непарный `tool_use` → 400 от провайдера).
     """
 
     role: Literal["user", "assistant"] = Field(description="Роль реплики: `user` или `assistant`.")
@@ -122,7 +122,7 @@ class ChatRunRequest(StrictModel):
     dialogMode: str | None = Field(
         default=None,
         description=(
-            "Режим диалога (ADR-055): `smart` | `deep_thinking` | `study_learn` | `search`. "
+            "Режим диалога: `smart` | `deep_thinking` | `study_learn` | `search`. "
             "Опционально; при отсутствии берётся дефолт из настроек пользователя, затем `smart`. "
             "Фиксируется при создании сессии; при продолжении берётся из сессии, поле запроса "
             "игнорируется. `deep_thinking`/`study_learn`/`search` требуют OpenAI-инстанса (иначе "
@@ -153,7 +153,7 @@ class ChatRunRequest(StrictModel):
     temporary: bool = Field(
         default=False,
         description=(
-            "Временный чат (ADR-056): ход НЕ персистится (ни `chat_sessions`/`chat_steps`/"
+            "Временный чат: ход НЕ персистится (ни `chat_sessions`/`chat_steps`/"
             "`tool_calls`), историю присылает клиент полем `history`. Client-side инструменты "
             "отключены (нужна континьюация через БД); server-side разрешены. Несовместим с "
             "`sessionId`/`editMessageStepId`/`projectId`/`workspaceProjectId` (→ 422)."
@@ -162,7 +162,7 @@ class ChatRunRequest(StrictModel):
     history: list[TemporaryTurn] | None = Field(
         default=None,
         description=(
-            "Клиентский текстовый транскрипт для временного чата (ADR-056): список "
+            "Клиентский текстовый транскрипт для временного чата: список "
             "`{role, content}` (только `user`/`assistant`). Применим ТОЛЬКО при `temporary=true` "
             "(иначе 422). Пустой список допустим (первый ход). Суммарный размер ≤ "
             "`SIZE_LIMIT_CONTEXT`."
@@ -397,12 +397,12 @@ class ServerToolExecutionSchema(StrictModel):
 
 
 class QuizSchema(StrictModel):
-    """Квиз режима Study & Learn ([ADR-057](adr/ADR-057-study-learn-quiz-contract.md)).
+    """Квиз режима Study & Learn.
 
     Результат global server-side инструмента `quiz.generate`, поднятый в `ChatResponse.quiz`.
     `options` — 2..10 вариантов; `correctIndex` — 0-based индекс правильного варианта; проверка
-    ответа выполняется на клиенте (`correctIndex` уходит клиенту — осознанный компромисс, ADR-057
-    §6). Валидатор `correctIndex < len(options)` дублирует инвариант `QuizGenerateArgs` на границе
+    ответа выполняется на клиенте (`correctIndex` уходит клиенту — осознанный компромисс).
+    Валидатор `correctIndex < len(options)` дублирует инвариант `QuizGenerateArgs` на границе
     ответа (защита от рассинхрона).
     """
 
@@ -426,11 +426,11 @@ class QuizSchema(StrictModel):
 
 
 class GeneratedImageRefSchema(StrictModel):
-    """Ссылка на сгенерированное изображение ([ADR-058](adr/ADR-058-image-generation.md)).
+    """Ссылка на сгенерированное изображение.
 
     Возвращается в `ChatResponse.images` при вызове server-side инструмента `image.generate`.
     Несёт ТОЛЬКО идентификатор и метаданные — байты фетчатся отдельно `GET /v1/images/{imageId}`
-    под JWT (чужое → 404). Промт НЕ включается (TD-035: не логируется и не отдаётся в метаданных).
+    под JWT (чужое → 404). Промт НЕ включается (не логируется и не отдаётся в метаданных).
     """
 
     imageId: uuid.UUID = Field(
@@ -461,7 +461,7 @@ _BLOCK_REASON_DOC = (
     "причин — `usage`/`messageStepId`/`stepId` присутствуют, кредит не списан, `toolCall(s)` "
     "не отдаются. UI: повторить/сократить запрос.\n"
     "- `image_credits_empty` — кредитов не хватило на генерацию изображения (`image.generate`, "
-    "режим `credits`). Байты не сохранены, дебет откатан (ADR-058 §5). Отдельно от "
+    "режим `credits`). Байты не сохранены, дебет откатан. Отдельно от "
     "`credits_empty` — UI показывает профильный CTA «недостаточно кредитов на изображение». "
     "Не policy-причина (как `max_tokens`): `evaluate()` её не возвращает, в "
     "`/policy/effective.reasons[]` не входит."
@@ -487,7 +487,7 @@ class ChatResponse(StrictModel):
     присутствует (возможно `[]`). Пустой при policy-`blocked`; может быть НЕпустым при
     `blocked`+`max_tokens`.
 
-    `quiz` — ортогонален `status` (ADR-057): присутствует (не `null`) только когда
+    `quiz` — ортогонален `status`: присутствует (не `null`) только когда
     `dialogMode=study_learn` и модель вызвала `quiz.generate`; иначе `null`/опущено. Обычно
     сопровождает финальный `assistant_message` (квиз + пояснительный текст за один ход), но может
     прийти и на `tool_call` (квиз выполнен до client-side инструмента) или на `blocked`+`max_tokens`
@@ -559,7 +559,7 @@ class ChatResponse(StrictModel):
     quiz: QuizSchema | None = Field(
         default=None,
         description=(
-            "Квиз режима Study & Learn ([ADR-057]). Присутствует только когда "
+            "Квиз режима Study & Learn. Присутствует только когда "
             "`dialogMode=study_learn` и модель вызвала `quiz.generate`; иначе `null`/опущено. "
             "`options` — 2..10 вариантов; `correctIndex` — 0-based индекс правильного (проверка "
             "ответа — на клиенте). Ортогонален `status`."
@@ -568,7 +568,7 @@ class ChatResponse(StrictModel):
     images: list[GeneratedImageRefSchema] | None = Field(
         default=None,
         description=(
-            "Изображения, сгенерированные `image.generate` в этом ходе ([ADR-058]). Каждый "
+            "Изображения, сгенерированные `image.generate` в этом ходе. Каждый "
             "элемент — только `imageId`/`contentType`/`size`; байты фетчатся "
             "`GET /v1/images/{imageId}` под JWT (чужое → 404). Каждое изображение = отдельный "
             "дебет `IMAGE_CREDITS_COST` сверх кредита за ход (итог `1 + N×COST`). `null`/опущено, "

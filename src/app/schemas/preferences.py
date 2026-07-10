@@ -35,7 +35,7 @@ class PreferencesResponse(StrictModel):
     )
     defaultDialogMode: DialogMode = Field(
         description=(
-            "Дефолтный режим диалога (smart|deep_thinking|study_learn|search, ADR-055 §3). "
+            "Дефолтный режим диалога (smart|deep_thinking|study_learn|search). "
             "Используется при создании сессии, если `dialogMode` не передан в /chat/run. "
             "Ортогонален `defaultAssistantMode` и режиму оплаты."
         )
@@ -53,7 +53,7 @@ class PreferencesPatchRequest(StrictModel):
     defaultDialogMode: DialogMode | None = Field(
         default=None,
         description=(
-            "Новый дефолтный режим диалога (smart|deep_thinking|study_learn|search, ADR-055 §3). "
+            "Новый дефолтный режим диалога (smart|deep_thinking|study_learn|search). "
             "Валидируется только членство в enum — сохранить любой режим допустимо на любом "
             "инстансе (provider-gate срабатывает при создании сессии в /chat/run, не здесь)."
         ),
