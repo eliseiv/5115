@@ -103,6 +103,8 @@
 
 **Статус:** **Closed / Resolved — 2026-06-10.** Второй инстанс `avelyra` (`avelyraweb.shop`) развёрнут на сервере и включён в `INSTANCES` обоих deploy-workflow. Живой broadnova.shop не затронут.
 
+> **Обновление (2026-07-10):** legacy multi-instance деплой-механизм (`INSTANCES`-loop в gated deploy-job `ci.yml` + ручной `deploy.yml` на сервер `87.239.135.154`) **впоследствии удалён** из репозитория — репозиторий деплоит один инстанс novirell (`deploy-novirell.yml`), `ci.yml` стал чистым quality-гейтом. Итог ниже — **исторический снапшот на 2026-06-10**; актуальная картина CI/CD — [INDEX §Ревизии](adr/INDEX.md#ревизии), [07-deployment.md §CI/CD (gate)](07-deployment.md#cicd-gate).
+
 **Итог выката (2026-06-10).** Все next-step операции devops выполнены и проверены ревью:
 1. `docker-compose.prod.yml` параметризован через `${COMPOSE_PROJECT_NAME:-claude-ios}` (image + Traefik router/service-имена); инвариант обратной совместимости проверен (`compose config` для существующего `/opt/claude-ios/.env` идентичен — broadnova не затронут).
 2. Закомментированный `COMPOSE_PROJECT_NAME` (дефолт `claude-ios`) добавлен в `.env.prod.example`.

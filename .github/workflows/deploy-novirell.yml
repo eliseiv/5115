@@ -3,19 +3,17 @@
 # docs/07-deployment.md §Сервер novirell. ONE instance: novirell -> /opt/novirell -> novirell.shop.
 #
 # WHY A SEPARATE WORKFLOW (decision, docs §Сервер novirell):
-#   The legacy deploy (ci.yml `deploy` job) targets a DIFFERENT physical server (87.239.135.154)
-#   with its own SSH endpoint/key. Two distinct hosts cannot share one `SSH_HOST` secret, so
-#   novirell gets its own workflow + its own SSH secrets. A separate workflow CANNOT `needs:` a job
+#   This is the SOLE deploy workflow of this repo. `ci.yml` is a pure quality gate (jobs
+#   quality/test/build-image) with NO deploy job. A separate workflow CANNOT `needs:` a job
 #   defined in ci.yml, so we gate on ci via `workflow_run` (run only after ci concluded success on
-#   main) — the equivalent of "green CI before deploy".
+#   main) — the equivalent of "green CI before deploy". This gate only fires when `ci` concludes
+#   SUCCESS: `ci` must therefore stay deploy-free (no failing deploy job dragging its conclusion
+#   red — the incident this workflow's existence + ci's gate cleanup resolved).
 #
 # GITHUB SECRETS (Settings -> Secrets and variables -> Actions) — NEVER hardcode:
 #   SSH_HOST = 49.12.189.77         (novirell server)
 #   SSH_USER = root                 (or the deploy user)
 #   SSH_KEY  = <private key whose public half is in the novirell server's authorized_keys>
-# NOTE the KEY secret is SSH_KEY here (the legacy ci.yml deploy uses SSH_PRIVATE_KEY — a DIFFERENT
-# name). The legacy SSH_HOST/SSH_USER were renamed to LEGACY_SSH_* to free the generic names for
-# novirell (see ci.yml / deploy.yml headers and docs §Сервер novirell — secret migration).
 #
 # EDGE: routing is via the docker-cp'd nginx vhost (deploy/nginx/novirell.shop.conf) in mas-nginx,
 # not docker labels. TLS is the host certbot cert mounted into mas-nginx. This workflow builds +
