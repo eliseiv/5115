@@ -156,7 +156,16 @@ jobs:
   # in the loop, so every push to main auto-deploys ALL instances.
   #
   # GitHub Secrets (Settings -> Secrets and variables -> Actions): NEVER hardcode these.
-  #   SSH_HOST=87.239.135.154 / SSH_USER=root / SSH_PRIVATE_KEY (public half in server authorized_keys)
+  #   LEGACY_SSH_HOST=87.239.135.154 / LEGACY_SSH_USER=root / LEGACY_SSH_PRIVATE_KEY
+  #   (public half in the legacy server's authorized_keys)
+  #
+  # ⚠️ SECRET MIGRATION (novirell server added, docs/07-deployment.md §Сервер novirell): the
+  # generic SSH_HOST/SSH_USER now belong to the SECOND physical server (49.12.189.77) used by
+  # .github/workflows/deploy-novirell.yml. One repo cannot point one SSH_HOST secret at two hosts,
+  # so THIS legacy deploy was migrated to LEGACY_SSH_* names. ACTION REQUIRED once: re-add the
+  # legacy server's secrets as LEGACY_SSH_HOST=87.239.135.154, LEGACY_SSH_USER=root,
+  # LEGACY_SSH_PRIVATE_KEY=<legacy private key>. Until then this job cannot connect (fails safely —
+  # it never deploys to the wrong host).
   #
   # PER-INSTANCE SMOKE (docs/07-deployment.md §CI/CD INSTANCES-loop: "Smoke-gate выполняется на
   # каждый инстанс по его SERVICE_DOMAIN"): the smoke check runs INSIDE the SSH loop, once per
@@ -194,9 +203,11 @@ jobs:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # LEGACY server (87.239.135.154). Renamed from SSH_* -> LEGACY_SSH_* so the generic
+          # SSH_HOST/SSH_USER are free for the novirell server (deploy-novirell.yml). See header.
+          host: ${{ secrets.LEGACY_SSH_HOST }}
+          username: ${{ secrets.LEGACY_SSH_USER }}
+          key: ${{ secrets.LEGACY_SSH_PRIVATE_KEY }}
           # script_stop MUST be false. appleboy/ssh-action's `script_stop: true` injects `set -e`
           # into the remote script REGARDLESS of the `set -uo pipefail` declared below — i.e. it
           # would override our design and abort on the FIRST non-zero command. We deliberately do

@@ -76,11 +76,11 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
 
 # Prod process manager: Gunicorn + UvicornWorker (02-tech-stack.md).
 # Graceful shutdown: gunicorn handles SIGTERM, drains workers within --graceful-timeout.
-CMD ["gunicorn", "app.main:app", \
-     "-k", "uvicorn.workers.UvicornWorker", \
-     "-w", "4", \
-     "-b", "0.0.0.0:8000", \
-     "--graceful-timeout", "30", \
-     "--timeout", "90", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+# Worker count is env-driven: GUNICORN_WORKERS (default 4 == the previous hardcoded value, so
+# existing instances are unchanged). A RAM-constrained host (e.g. novirell: shared 3.8 GB) sets a
+# lower value in its .env — see deploy/novirell.env.example (GUNICORN_WORKERS=2) and
+# docs/07-deployment.md §Sizing (recompute the DB pool: (pool_size+max_overflow)*workers).
+# NB: uses the `sh -c` + `exec` shell form ON PURPOSE — the JSON exec-form CMD does NOT expand
+# ${...}. `exec` replaces the shell so gunicorn stays PID 1 and receives SIGTERM (graceful drain),
+# exactly as the previous exec-form did.
+CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w ${GUNICORN_WORKERS:-4} -b 0.0.0.0:8000 --graceful-timeout 30 --timeout 90 --access-logfile - --error-logfile -"]

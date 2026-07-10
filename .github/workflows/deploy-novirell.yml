@@ -1,0 +1,130 @@
+# =============================================================================
+# Deploy — novirell server (49.12.189.77) behind the SHARED nginx `mas-nginx` (NOT Traefik).
+# docs/07-deployment.md §Сервер novirell. ONE instance: novirell -> /opt/novirell -> novirell.shop.
+#
+# WHY A SEPARATE WORKFLOW (decision, docs §Сервер novirell):
+#   The legacy deploy (ci.yml `deploy` job) targets a DIFFERENT physical server (87.239.135.154)
+#   with its own SSH endpoint/key. Two distinct hosts cannot share one `SSH_HOST` secret, so
+#   novirell gets its own workflow + its own SSH secrets. A separate workflow CANNOT `needs:` a job
+#   defined in ci.yml, so we gate on ci via `workflow_run` (run only after ci concluded success on
+#   main) — the equivalent of "green CI before deploy".
+#
+# GITHUB SECRETS (Settings -> Secrets and variables -> Actions) — NEVER hardcode:
+#   SSH_HOST = 49.12.189.77         (novirell server)
+#   SSH_USER = root                 (or the deploy user)
+#   SSH_KEY  = <private key whose public half is in the novirell server's authorized_keys>
+# NOTE the KEY secret is SSH_KEY here (the legacy ci.yml deploy uses SSH_PRIVATE_KEY — a DIFFERENT
+# name). The legacy SSH_HOST/SSH_USER were renamed to LEGACY_SSH_* to free the generic names for
+# novirell (see ci.yml / deploy.yml headers and docs §Сервер novirell — secret migration).
+#
+# EDGE: routing is via the docker-cp'd nginx vhost (deploy/nginx/novirell.shop.conf) in mas-nginx,
+# not docker labels. TLS is the host certbot cert mounted into mas-nginx. This workflow only builds
+# + migrates + starts the stack; the vhost is provisioned once by the operator (docs runbook).
+# =============================================================================
+name: deploy-novirell
+
+on:
+  # Gate on green CI: run only after the `ci` workflow COMPLETED. The `if` below further restricts
+  # to conclusion == success AND the main branch. (A separate workflow cannot `needs` ci's jobs.)
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+  # Manual out-of-band redeploy (e.g. re-run after DNS/cert settle) without a new commit.
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-novirell
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: ssh deploy (novirell / shared nginx)
+    runs-on: ubuntu-latest
+    # For workflow_run: only a SUCCESSFUL ci run on main. For workflow_dispatch: event name check
+    # short-circuits (no workflow_run payload). Either path may proceed.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_branch == 'main') }}
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          # Pin the server's SSH host key to defeat MITM on the deploy connection. OPTIONAL secret:
+          # if SSH_HOST_FINGERPRINT is unset it resolves to "" and appleboy/ssh-action falls back to
+          # its previous auto-accept behaviour (deploy is NOT broken by its absence). To enable, add
+          # the secret = output of `ssh-keyscan -t ed25519 49.12.189.77 | ssh-keygen -lf - | awk '{print $2}'`
+          # (or the base64 host key). Recommended for production hardening.
+          fingerprint: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          # script_stop MUST be false — same rationale as ci.yml: appleboy injects `set -e` when
+          # true, which would abort on the first non-zero command. We manage failures explicitly.
+          script_stop: false
+          script: |
+            set -uo pipefail   # NO `-e` — explicit rc checks; job goes red via final exit 1.
+            # ONE instance on this server (dir:project). Deterministic container name novirell-api-1
+            # (project novirell + service api) is what deploy/nginx/novirell.shop.conf proxies to.
+            INSTANCES="novirell:novirell"
+            FAILED=""
+            for entry in $INSTANCES; do
+              dir="${entry%%:*}"; proj="${entry##*:}"
+              echo "[deploy] === instance dir=/opt/$dir project=$proj ==="
+              cd "/opt/$dir" || { echo "::error title=cd failed ($proj)::/opt/$dir missing"; FAILED="$FAILED $proj"; continue; }
+              echo "[deploy:$proj] git pull"
+              if ! git pull --ff-only; then
+                echo "::error title=git pull failed ($proj)::ff-only pull failed in /opt/$dir"; FAILED="$FAILED $proj"; continue
+              fi
+              # (1) Build on the server (real build failure => fail the instance).
+              echo "[deploy:$proj] build (image built on the server)"
+              if ! docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env build api migrate; then
+                echo "::error title=build failed ($proj)::docker compose build returned non-zero"; FAILED="$FAILED $proj"; continue
+              fi
+              # (2) Migrate explicitly BEFORE api (real migration failure => fail the instance).
+              echo "[deploy:$proj] migrate (alembic upgrade head)"
+              if ! docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env run --rm migrate; then
+                echo "::error title=migrate failed ($proj)::alembic upgrade head returned non-zero"; FAILED="$FAILED $proj"; continue
+              fi
+              # (3) Start only (already built). rc recorded but NOT trusted; readiness gate decides.
+              echo "[deploy:$proj] up -d --no-build (rc recorded, not trusted)"
+              up_rc=0
+              docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env up -d --no-build || up_rc=$?
+              echo "[deploy:$proj] up rc=$up_rc (informational)"
+              # (4) Readiness gate: api container health (compose healthcheck = GET /ready).
+              echo "[deploy:$proj] readiness gate: api container health"
+              ready=0
+              for i in $(seq 1 30); do
+                h="$(docker inspect "${proj}-api-1" --format '{{.State.Health.Status}}' 2>/dev/null || echo none)"
+                if [ "$h" = "healthy" ]; then echo "[deploy:$proj] api healthy ($i)"; ready=1; break; fi
+                echo "[deploy:$proj] api health=$h ($i/30) — retrying in 2s"; sleep 2
+              done
+              if [ "$ready" -ne 1 ]; then
+                echo "::error title=api not healthy ($proj)::api did not become healthy within ~60s (up rc=$up_rc). Last logs:"
+                docker logs "${proj}-api-1" --tail 40 2>&1 || true
+                FAILED="$FAILED $proj"; continue
+              fi
+              # (5) Public smoke through mas-nginx (TLS + Host routing) — NON-FATAL. On a first deploy
+              #     the nginx vhost / cert may still be settling; retry 12 x 5s then ::warning.
+              url="https://novirell.shop/healthz"
+              echo "[smoke:$proj] GET $url"
+              smoke_ok=0
+              for i in $(seq 1 12); do
+                if curl -fsS --max-time 5 "$url" >/dev/null; then echo "[smoke:$proj] healthz OK"; smoke_ok=1; break; fi
+                echo "[smoke:$proj] not ready ($i/12) — retrying in 5s"; sleep 5
+              done
+              if [ "$smoke_ok" -ne 1 ]; then
+                echo "::warning title=Smoke /healthz not green ($proj)::$url did not return 200 within 60s. build+migrate+up succeeded and api is healthy in-container; the mas-nginx vhost / host certbot cert or DNS may still be settling. Verify the vhost was docker-cp'd + nginx reloaded, then re-run."
+              fi
+            done
+            echo "[deploy] prune dangling build layers (best-effort)"
+            docker image prune -f || true
+            if [ -n "$FAILED" ]; then
+              echo "::error title=Deploy failed::instance(s) failed:$FAILED"
+              exit 1
+            fi
+            echo "[deploy] novirell deployed and healthy"

@@ -170,8 +170,12 @@ services:
     #     entirely Traefik's responsibility (ADR-017 req. 4).
     labels:
       - "traefik.enable=true"
-      # The network Traefik uses to reach this container (must be the shared `web` network).
-      - "traefik.docker.network=web"
+      # The network Traefik uses to reach this container (must be the shared external edge network).
+      # Parameterised via ${EDGE_NETWORK:-web} (default `web` — the legacy 87.239.135.154 server;
+      # the novirell server sets EDGE_NETWORK=mas-net). NB: on the novirell server there is NO
+      # Traefik reader for this label — routing is done by the shared nginx (mas-nginx) via a
+      # docker-cp'd vhost (deploy/nginx/novirell.shop.conf); the label stays harmless/inert there.
+      - "traefik.docker.network=${EDGE_NETWORK:-web}"
       # Host router. SERVICE_DOMAIN comes from .env (Q-017-1 resolved -> broadnova.shop; A-record
       # broadnova.shop -> 87.239.135.154 must exist before launch for Traefik's ACME challenge).
       # Backticks are required by Traefik's rule syntax.
@@ -196,10 +200,17 @@ services:
       - "traefik.http.services.${COMPOSE_PROJECT_NAME:-claude-ios}.loadbalancer.server.port=8000"
 
 networks:
-  # External network shared with the Traefik edge-proxy. Created once on the server:
-  #   docker network create web   (ADR-017 — already created on 87.239.135.154).
+  # External edge network shared with the reverse proxy. The compose-local KEY stays `web` so the
+  # per-service references (`networks: [web, default]`) never change, but the REAL docker network
+  # NAME is parameterised via ${EDGE_NETWORK:-web} (backward-compat invariant):
+  #   - Legacy server 87.239.135.154: EDGE_NETWORK unset -> `web` (created once: docker network
+  #     create web). Identical to the previous hardcoded value -> no-op for the live claude-ios.
+  #   - novirell server 49.12.189.77: EDGE_NETWORK=mas-net -> attaches to the EXISTING external
+  #     network `mas-net` (owned by the mail-aggregator stack; the shared nginx `mas-nginx` is a
+  #     member). We do NOT create it — it already exists (external: true).
   web:
     external: true
+    name: ${EDGE_NETWORK:-web}
   # Internal stack network for api <-> postgres/redis (created/managed by this compose file).
   default:
 

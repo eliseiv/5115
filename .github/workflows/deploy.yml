@@ -21,9 +21,14 @@
 # provisioned (clone .env + .secrets/) and are in the loop.
 #
 # GitHub Secrets (Settings -> Secrets and variables -> Actions): NEVER hardcode these.
-#   SSH_HOST=87.239.135.154
-#   SSH_USER=root
-#   SSH_PRIVATE_KEY  (private key whose public half is in the server's ~/.ssh/authorized_keys)
+#   LEGACY_SSH_HOST=87.239.135.154
+#   LEGACY_SSH_USER=root
+#   LEGACY_SSH_PRIVATE_KEY  (private key whose public half is in the server's authorized_keys)
+#
+# ⚠️ SECRET MIGRATION (novirell server added, docs/07-deployment.md §Сервер novirell): the generic
+# SSH_HOST/SSH_USER now belong to the novirell server (49.12.189.77, deploy-novirell.yml). This
+# legacy manual deploy was migrated to LEGACY_SSH_* to avoid the SSH_HOST collision. Re-add the
+# legacy secrets under the LEGACY_SSH_* names (one-time).
 #
 # PER-INSTANCE SMOKE (docs/07-deployment.md §CI/CD INSTANCES-loop: "Smoke-gate выполняется на
 # каждый инстанс по его SERVICE_DOMAIN"): the smoke check runs INSIDE the SSH loop, once per
@@ -66,9 +71,11 @@ jobs:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # LEGACY server (87.239.135.154). Renamed SSH_* -> LEGACY_SSH_* (see header): the generic
+          # SSH_HOST/SSH_USER now belong to the novirell server (deploy-novirell.yml).
+          host: ${{ secrets.LEGACY_SSH_HOST }}
+          username: ${{ secrets.LEGACY_SSH_USER }}
+          key: ${{ secrets.LEGACY_SSH_PRIVATE_KEY }}
           # NOTE: identical hardened logic to the gated deploy job in ci.yml. We do NOT trust the
           # fused exit code of `compose up --build`; failures are managed explicitly so a real
           # failure goes red but a transient/benign one does not falsely abort the INSTANCES loop.
