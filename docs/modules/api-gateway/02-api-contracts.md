@@ -25,6 +25,7 @@ Gateway не добавляет собственных бизнес-endpoint, к
 | POST | /v1/byok/toggle | byok | [link](../byok/02-api-contracts.md) |
 | POST | /v1/byok/delete | byok | [link](../byok/02-api-contracts.md) |
 | GET PATCH DELETE | /v1/chats[/{id}] (+ /{id}/steps) | chats | [link](../chats/02-api-contracts.md) |
+| GET | /v1/images (список), /v1/images/{imageId} (байты) | images ([ADR-058](../../adr/ADR-058-image-generation.md)) | [API-REFERENCE §27](../../API-REFERENCE.md) |
 | GET PATCH | /v1/profile | profile | [link](../profile/02-api-contracts.md) |
 | GET PATCH | /v1/preferences | preferences | [link](../preferences/02-api-contracts.md) |
 | POST GET PATCH DELETE | /v1/workspaces[/{id}] (+ /{id}/files) | workspaces | [link](../workspaces/02-api-contracts.md) |
