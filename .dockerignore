@@ -1,0 +1,30 @@
+# Keep build context minimal and free of secrets / local cruft (05-security.md).
+.env
+.env.*
+!.env.example
+# Defense-in-depth: keep all local secrets out of the build context regardless of
+# the whitelist-COPY in the Dockerfile (private JWT key, generated tokens, any cert).
+.secrets/
+*.pem
+*.key
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Not needed inside the image.
+tests/
+docs/
+.git/
+.github/
+infra/
+deploy/
+docker-compose*.yml
+*.md

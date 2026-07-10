@@ -1,0 +1,91 @@
+# Starter alert rules (07-deployment.md §Наблюдаемость в проде).
+# Metric names match src/app/observability/metrics.py exactly.
+groups:
+  - name: claude-ios-backend
+    rules:
+      # Target down — process / container not scrapeable.
+      - alert: BackendTargetDown
+        expr: up{job="claude-ios-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend target {{ $labels.instance }} is down"
+          description: "Prometheus cannot scrape /metrics for >1m."
+
+      # Spike of rate-limited blocks (abuse / misbehaving client).
+      - alert: BlockedRequestsRateLimitedSpike
+        expr: sum(rate(blocked_requests_total{reason="rate_limited"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained rate_limited blocks"
+          description: "blocked_requests_total{reason=rate_limited} rate > 1/s for 5m."
+
+      # Any sustained debit failures — billing integrity signal (AC-3).
+      - alert: WalletDebitFailures
+        expr: sum(rate(wallet_debit_total{result="fail"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Wallet debit failures observed"
+          description: "wallet_debit_total{result=fail} > 0 sustained for 10m — investigate ledger."
+
+      # p95 latency degradation of chat orchestration (excludes Anthropic call).
+      - alert: ChatRunLatencyP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(chat_run_latency_seconds_bucket[5m])) by (le)
+          ) > 1.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "chat_run_latency p95 high"
+          description: "p95 of chat_run_latency_seconds > 1.5s for 10m."
+
+      # Tool-loop roundtrip latency degradation.
+      - alert: ToolCallRoundtripP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(tool_call_roundtrip_latency_seconds_bucket[5m])) by (le)
+          ) > 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "tool_call_roundtrip p95 high"
+          description: "p95 of tool_call_roundtrip_latency_seconds > 30s for 15m."
+
+      # website-builder / admin signals (metrics exist in metrics.py; scraped by the
+      # existing claude-ios-backend job — no scrape-config change needed).
+
+      # Sustained forbidden preview requests — possible signed-URL probing / tampering
+      # (ADR-010 threat model: forged/expired token or owner mismatch -> 403/404).
+      - alert: PreviewForbiddenSpike
+        expr: sum(rate(preview_request_total{result="forbidden"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained forbidden preview requests"
+          description: "preview_request_total{result=forbidden} rate > 1/s for 10m — possible signed-URL probing."
+
+      # Sustained site-file write failures (limit/encoding/validation rejects).
+      # Excludes success; any of invalid_encoding / limit / validation codes.
+      - alert: SiteFileWriteFailures
+        expr: sum(rate(site_file_write_total{result!="success"}[5m])) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "site.write_file failures observed"
+          description: "site_file_write_total{result!=success} rate > 0.5/s for 15m — check limits/content-type allowlist (ADR-010)."
+
+      # Readiness flapping inferred from scrape health is covered by BackendTargetDown.
+      # Anthropic/Apple/KMS dependency outages surface as wallet/debit failures and
+      # elevated chat_run_latency; add provider-specific probes when those exporters exist.

@@ -1,0 +1,95 @@
+[project]
+name = "claude-ios-backend"
+version = "0.1.0"
+description = "Backend for iOS Claude orchestration app (modular monolith)"
+# Upper bound pins the interpreter to 3.12.x (CI installs 3.12; Dockerfile uses python:3.12-slim).
+# Without <3.13 uv may resolve a newer Python (3.13/3.14) on a clean machine, where asyncpg>=0.29,
+# <0.30 has no wheels and `uv sync` fails to build. `.python-version` (=3.12) selects the dev
+# interpreter; this metadata bound is the hard resolver guard. Reproducible dev/CI for sprints 2-5.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.32,<0.33",
+    "gunicorn>=23,<24",
+    "pydantic>=2.9,<2.10",
+    # ADR-051: pydantic EmailStr (CloudPaymentsCheckoutRequest.customerEmail) requires
+    # email-validator at runtime. Made an explicit dependency (was only transitive).
+    "email-validator>=2,<3",
+    "pydantic-settings>=2.5,<2.6",
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "asyncpg>=0.29,<0.30",
+    "alembic>=1.13,<1.14",
+    "redis>=5,<6",
+    "anthropic>=0.39,<0.40",
+    # ADR-033 / ADR-059: OpenAI SDK for the OpenAI provider (AsyncOpenAI, Responses API). Used only
+    # when LLM_PROVIDER=openai; the default anthropic path does not import it at runtime. Floor
+    # raised to >=1.99 (ADR-059 §7): the Responses API + gpt-image-1 must be present; <2 (a major
+    # may break the tool-loop / usage parsing).
+    "openai>=1.99,<2",
+    "httpx>=0.27,<0.28",
+    "pyjwt[crypto]>=2.9,<2.10",
+    "cryptography>=43,<44",
+    "prometheus-client>=0.21,<0.22",
+    "pypdf>=5,<6",
+    # TD-019 (ADR-026 §10): tz database for zoneinfo on the slim runtime image
+    # (python:3.12-slim-bookworm has no /usr/share/zoneinfo). Pure-Python fallback
+    # used automatically by stdlib `zoneinfo` so `time.now` tz arg resolves in prod.
+    "tzdata>=2024.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7,<0.8",
+    "mypy>=1.11,<1.12",
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<0.25",
+    "pytest-cov>=5,<6",
+    "testcontainers>=4,<5",
+    "respx>=0.21,<0.22",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "ASYNC"]
+ignore = ["B008"]  # FastAPI Depends() in defaults
+
+[tool.mypy]
+python_version = "3.12"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["app.policy.*", "app.wallet.*", "app.byok.*", "app.chat.*"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*", "respx.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+    "external: tests that hit real external services (e.g. real Anthropic). Excluded from CI; run on demand.",
+]
+
+[tool.coverage.run]
+source = ["src"]

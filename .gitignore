@@ -1,0 +1,57 @@
+# ── Secrets / env ───────────────────────────────────────────────
+# Ignore .env and ANY .env.* (local, e2e, prod, staging, …) — these hold real
+# secrets, provisioned from the secret manager / locally, NEVER committed.
+# Committed templates are the *.example files (placeholders only) — re-included below.
+.env
+.env.*
+!.env.example
+!.env.prod.example
+
+# Local e2e secrets: JWT private/public keys, generated tokens — never commit.
+.secrets/
+# Observability overlay scrape token (real token never committed).
+infra/observability/secrets/scrape_token
+
+# Defense-in-depth: never commit private keys / certs anywhere in the tree,
+# even outside .secrets/. No public .pem/.key is meant to be committed by default;
+# if one ever must be, add a targeted `!path/to/file` exception below.
+*.pem
+*.key
+*.p12
+*.cer
+*.der
+*.crt
+
+# ── Python ──────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# ── IDE / editor ────────────────────────────────────────────────
+.idea/
+.vscode/
+
+# ── Local scratch / run artifacts (not part of the repo) ────────
+# Captured test/run output logs from local runs.
+*_err.txt
+*.log
+# Figma design reference screenshots used for the gap-analysis (not backend source).
+# Remove this line if you intend to version the design references.
+screenshot/
+# Ad-hoc screenshots pasted into the repo root during debugging (not source).
+*.jpg
+*.jpeg
+*.png
+
+# ── Agent tooling (multi-agent orchestration kitchen, not the service) ──
+CLAUDE.md
+.claude

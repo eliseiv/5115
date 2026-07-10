@@ -1,0 +1,75 @@
+# =============================================================================
+# DEPRECATED / LEGACY — NOT USED in the shared-server + external Traefik scheme (ADR-017).
+# Kept for reference only. TLS / reverse-proxy is now the EXTERNAL Traefik's responsibility
+# (/opt/edge); our stack contains no proxy. Do NOT deploy this. See docs/07-deployment.md.
+# =============================================================================
+#
+# OPTIONAL nginx alternative to the Caddyfile (docs/07-deployment.md §Reverse-proxy).
+# Caddy is preferred (auto-ACME). Use this only if you run nginx + certbot instead.
+# This is an .example template: replace api.example.com with your domain and wire in
+# your certbot-managed certificate paths, then mount as /etc/nginx/conf.d/app.conf.
+# Same header contract as the Caddyfile (docs/05-security.md ADR-010).
+
+# Redirect all HTTP to HTTPS.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name api.example.com;
+    # certbot http-01 challenge location (if using webroot mode).
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+upstream api_upstream {
+    server api:8000;
+    keepalive 16;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name api.example.com;
+
+    # certbot-managed cert (Let's Encrypt). Renew via `certbot renew` cron on the host.
+    ssl_certificate     /etc/letsencrypt/live/api.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    server_tokens off;
+
+    # Real client IP for the app's per-IP rate limiting / anti-spoofing.
+    # TRUSTED_PROXY_IPS in .env.prod MUST list this proxy's source range (docs/05-security.md).
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # ------------------------------------------------------------------------
+    # /v1/preview/* — user-generated content. Pass app headers through AS-IS.
+    # Do NOT set HSTS / X-Frame-Options / CSP here, and do NOT add Set-Cookie
+    # (ADR-010). proxy_pass_header keeps upstream headers intact; we add none.
+    # ------------------------------------------------------------------------
+    location ^~ /v1/preview/ {
+        proxy_pass http://api_upstream;
+        proxy_http_version 1.1;
+        # No add_header here: upstream sandbox headers are forwarded unchanged.
+        # Explicitly ensure no proxy-side cookie is injected.
+        proxy_hide_header Set-Cookie;   # safety: app already sends none on this path
+    }
+
+    # ------------------------------------------------------------------------
+    # Everything else — normal API with global security headers.
+    # ------------------------------------------------------------------------
+    location / {
+        proxy_pass http://api_upstream;
+        proxy_http_version 1.1;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+    }
+
+    access_log /var/log/nginx/app.access.log;
+    error_log  /var/log/nginx/app.error.log warn;
+}

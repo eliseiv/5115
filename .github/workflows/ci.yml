@@ -1,0 +1,323 @@
+# CI gate + gated deploy (07-deployment.md §CI/CD, 06-testing-strategy.md §CI gate, ADR-017).
+# Platform: GitHub Actions (CI platform not fixed in docs -> reasonable default).
+# Any failure on lint / format / type-check / tests / coverage blocks merge AND blocks deploy.
+#
+# DEPLOY ORDERING (incident fix): deploy is a JOB IN THIS WORKFLOW with
+# `needs: [quality, test, build-image]`, so GitHub will NOT start it until ALL CI jobs have
+# succeeded. Previously deploy was a SEPARATE workflow also triggered on push:main, so it ran
+# in PARALLEL with CI and could deploy a red build. With `needs` + `if: ...success()` the deploy
+# is deterministically gated: a failing CI job fails the workflow and deploy never starts.
+# Manual / out-of-band redeploys live in deploy.yml (workflow_dispatch only — no push trigger).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# NOTE: this `concurrency` only applies to the CI jobs (quality/test/build-image). The deploy
+# job below sets its OWN job-level concurrency (`deploy-production`, no cancel) so an in-flight
+# deploy is never cancelled even though superseded CI runs are.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.4.30"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  quality:
+    name: lint • format • types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install deps (uv sync)
+        run: uv sync --frozen
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Type-check (mypy)
+        run: uv run mypy src
+
+  test:
+    name: test • coverage gate
+    runs-on: ubuntu-latest
+    # Integration/e2e use testcontainers, which need a Docker daemon (present on
+    # ubuntu-latest runners). No service containers declared: testcontainers manages them.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install deps (uv sync)
+        run: uv sync --frozen
+
+      # Global coverage gate: 80% (02-tech-stack.md, 06-testing-strategy.md).
+      - name: Pytest + coverage (global gate 80%)
+        run: >
+          uv run pytest
+          --cov=src
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=80
+
+      # Critical packages must hit >=95% (06-testing-strategy.md §Coverage gate).
+      - name: Critical-package coverage gate (policy/wallet/byok >=95%)
+        run: >
+          uv run pytest
+          --cov=src/app/policy
+          --cov=src/app/wallet
+          --cov=src/app/byok
+          --cov-report=term-missing
+          --cov-fail-under=95
+          tests/unit tests/integration
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  build-image:
+    name: build docker image (validation only)
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    # ADR-017: the deployable image is BUILT ON THE SERVER (`docker compose up -d --build`),
+    # NOT pushed to a registry. This job only VALIDATES that the Dockerfile builds — it does
+    # not log in to or push to any registry (no `packages: write`, no GHCR). Deploy is a
+    # separate workflow (.github/workflows/deploy.yml: SSH -> git pull -> compose up --build).
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push — validation)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: false
+          tags: claude-ios-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------------------------
+  # Gated deploy — shared server + external Traefik via SSH (docs/07-deployment.md §Процедура
+  # деплоя, ADR-017). This job is the FULL deploy and is GATED by `needs` on every CI job:
+  # GitHub will not even queue it until quality + test + build-image have all succeeded. Combined
+  # with `if: ... && success()` and the branch guard, it runs ONLY on a green push to main.
+  #
+  # Image is BUILT ON THE SERVER (`docker compose up -d --build`), not pulled from a registry
+  # (ADR-017 — no immutable registry tag; rollback = git checkout <prev-commit> + rebuild).
+  #
+  # Flow: SSH -> for each instance in $INSTANCES: cd /opt/<dir> -> git pull -> compose -p <proj>
+  #       run --rm migrate -> compose -p <proj> up -d --build -> smoke /healthz.
+  #
+  # MULTI-INSTANCE (ADR-017 §CI/CD INSTANCES-loop): the single-instance deploy is generalised to a
+  # loop over $INSTANCES, a space-separated `dir:project` list with claude-ios FIRST. For the live
+  # instance `claude-ios:claude-ios` -> `-p claude-ios` is the SAME project name as the previous
+  # deploy with no `-p` (basename of /opt/claude-ios) => a NO-OP for broadnova.shop (backward-
+  # compat). The other instances `avelyra:avelyra` (avelyraweb.shop), `orvianix:orvianix`
+  # (orvianix.shop, OpenAI) and `veltrio:veltrio` (veltriohub.shop, OpenAI) are provisioned on the
+  # server (clone .env + .secrets/ per docs/07-deployment.md §Процедура провижининга клона) and are
+  # in the loop, so every push to main auto-deploys ALL instances.
+  #
+  # GitHub Secrets (Settings -> Secrets and variables -> Actions): NEVER hardcode these.
+  #   SSH_HOST=87.239.135.154 / SSH_USER=root / SSH_PRIVATE_KEY (public half in server authorized_keys)
+  #
+  # PER-INSTANCE SMOKE (docs/07-deployment.md §CI/CD INSTANCES-loop: "Smoke-gate выполняется на
+  # каждый инстанс по его SERVICE_DOMAIN"): the smoke check runs INSIDE the SSH loop, once per
+  # instance, against the domain read from THAT instance's /opt/<dir>/.env (`SERVICE_DOMAIN=`).
+  # It is NOT the global repo Variable `vars.SERVICE_DOMAIN` (which would only cover one domain
+  # once a second instance like avelyra is added). Smoke is NON-FATAL (warning, not failure):
+  # on a first deploy the A-record / Traefik Let's Encrypt cert may still be settling. If an
+  # instance's .env has no SERVICE_DOMAIN, its smoke is skipped for that instance only.
+  #
+  # ROLLBACK (no registry/immutable tag): on the server, in /opt/claude-ios:
+  #   git log --oneline -n 5 ; git checkout <prev-commit>
+  #   docker compose -f docker-compose.prod.yml run --rm migrate   # if needed (expand/contract)
+  #   docker compose -f docker-compose.prod.yml up -d --build
+  # Schema is NOT reverted (expand/contract migrations keep the old code compatible). See
+  # docs/07-deployment.md §Откат and infra/deploy/README.md.
+  deploy:
+    name: ssh deploy (shared server + Traefik)
+    runs-on: ubuntu-latest
+    # Hard gate: do not start until ALL CI jobs pass (deterministic ordering — fixes the incident
+    # where deploy ran in parallel with / ahead of CI).
+    needs: [quality, test, build-image]
+    # Deploy only from main, and only if the needed jobs all succeeded (a failed `needs` would
+    # normally skip this, but `success()` makes the intent explicit and guards against re-runs).
+    if: ${{ github.ref == 'refs/heads/main' && success() }}
+    # Optional GitHub Environment for required reviewers / protection rules on prod deploys.
+    environment: production
+    permissions:
+      contents: read
+    # Single in-flight deploy; do NOT cancel one mid-run (avoid half-applied state). This is a
+    # JOB-level concurrency, independent of the workflow-level `ci-*` group above.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # script_stop MUST be false. appleboy/ssh-action's `script_stop: true` injects `set -e`
+          # into the remote script REGARDLESS of the `set -uo pipefail` declared below — i.e. it
+          # would override our design and abort on the FIRST non-zero command. We deliberately do
+          # NOT want `-e`: the INSTANCES loop must run through ALL instances, recording per-instance
+          # failures in FAILED instead of bailing on the first one (which would drop avelyra).
+          # With script_stop:false the remote shell behaviour is governed solely by our own
+          # `set -uo pipefail` (note: NO `-e`). Loop resilience is therefore INTENTIONAL by design,
+          # not an accident of every failing command happening to be guarded.
+          # INVARIANT: a single instance's failure is captured in FAILED and does NOT abort the
+          # others; real failures are caught by explicit rc checks (`if ! build`, `if ! migrate`) +
+          # the api readiness gate, and the job goes RED via the final `exit 1` when FAILED is
+          # non-empty. That final `exit 1` is OUTSIDE any guard, so real failures always go red.
+          script_stop: false
+          script: |
+            set -uo pipefail   # NO `-e` on purpose — see script_stop note above (loop must visit ALL instances)
+            # INCIDENT (2026-06-10) ROOT CAUSE & FIX
+            # -----------------------------------------------------------------------------------
+            # The combined `docker compose up -d --build` step exited 1 right after
+            # "claude-ios-api-1 Started", aborting the loop under `set -euo pipefail` BEFORE the
+            # second instance (avelyra) was reached — even though api came up healthy. The step
+            # fused THREE concerns into one exit code: (a) the BuildKit image build, (b) the
+            # one-shot `migrate` service (restart:"no") that `api` depends on via
+            # `service_completed_successfully` — `up` waits for it and can surface a non-zero from
+            # the build/one-shot path, and (c) starting api. A non-zero from (a)/(b) thus aborted
+            # the deploy despite api being fine.
+            #
+            # FIX: decouple the three concerns and gate the step on ACTUAL api readiness, not on
+            # the fused exit code of `up --build`:
+            #   1. `compose build` explicitly  — a REAL build failure fails the instance.
+            #   2. `compose run --rm migrate`   — a REAL migration failure fails the instance.
+            #   3. `compose up -d --no-build`    — start only; its rc is recorded but NOT trusted
+            #      (a transient one-shot/up quirk must not abort the loop).
+            #   4. Readiness gate: poll api container health; if api does NOT become healthy ->
+            #      this instance REALLY failed -> record it. Real failures still turn the job red.
+            # This does NOT mask real failures: build error, migration error and api-not-healthy
+            # all fail the instance; only the spurious `up --build` exit code is no longer trusted.
+            # Backward-compat for claude-ios is preserved (same `-p claude-ios`, same images/labels;
+            # verified on the server: migrate exits 0, api becomes healthy, /healthz=200).
+            #
+            # INSTANCES — space-separated `dir:project` list, claude-ios FIRST (ADR-017 §CI/CD
+            # INSTANCES-loop). `-p claude-ios` == basename of /opt/claude-ios => no-op vs the
+            # previous no-`-p` deploy (backward-compat for the live broadnova.shop). The second
+            # instance `avelyra:avelyra` (avelyraweb.shop) is provisioned on the server. The third
+            # instance `orvianix:orvianix` (orvianix.shop) and the fourth `veltrio:veltrio`
+            # (veltriohub.shop) are OpenAI clones (ADR-033: LLM_PROVIDER=openai + OPENAI_* in their
+            # own /opt/<dir>/.env) — same code, same per-instance deploy/readiness/smoke; only their
+            # .env differs.
+            INSTANCES="claude-ios:claude-ios avelyra:avelyra orvianix:orvianix veltrio:veltrio"
+            FAILED=""   # collect instances that REALLY failed; job goes red at the end if non-empty
+            for entry in $INSTANCES; do
+              dir="${entry%%:*}"; proj="${entry##*:}"
+              echo "[deploy] === instance dir=/opt/$dir project=$proj ==="
+              cd "/opt/$dir" || { echo "::error title=cd failed ($proj)::/opt/$dir missing"; FAILED="$FAILED $proj"; continue; }
+              echo "[deploy:$proj] git pull"
+              if ! git pull --ff-only; then
+                echo "::error title=git pull failed ($proj)::ff-only pull failed in /opt/$dir"; FAILED="$FAILED $proj"; continue
+              fi
+              # (1) Build image on the server (REAL build failure => fail this instance).
+              echo "[deploy:$proj] build (image built on the server)"
+              if ! docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env build api migrate; then
+                echo "::error title=build failed ($proj)::docker compose build returned non-zero"; FAILED="$FAILED $proj"; continue
+              fi
+              # (2) Migrate explicitly BEFORE api (REAL migration failure => fail this instance).
+              echo "[deploy:$proj] migrate (alembic upgrade head)"
+              if ! docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env run --rm migrate; then
+                echo "::error title=migrate failed ($proj)::alembic upgrade head returned non-zero"; FAILED="$FAILED $proj"; continue
+              fi
+              # (3) Start only (no build here — already built in step 1). The one-shot `migrate`
+              #     service runs again as an api dependency and EXITS; `up`'s rc can be non-zero
+              #     for benign reasons (one-shot exit / BuildKit session), so we record but do NOT
+              #     trust it — the readiness gate (4) is the source of truth.
+              echo "[deploy:$proj] up -d --no-build (rc recorded, not trusted; readiness gate decides)"
+              up_rc=0
+              docker compose -p "$proj" -f docker-compose.prod.yml --env-file .env up -d --no-build || up_rc=$?
+              echo "[deploy:$proj] up rc=$up_rc (informational)"
+              # (4) Deterministic readiness gate: api MUST become healthy (compose healthcheck =
+              #     GET /ready: db+redis). If it does not within ~60s, this is a REAL failure.
+              echo "[deploy:$proj] readiness gate: api container health"
+              ready=0
+              for i in $(seq 1 30); do
+                h="$(docker inspect "${proj}-api-1" --format '{{.State.Health.Status}}' 2>/dev/null || echo none)"
+                if [ "$h" = "healthy" ]; then echo "[deploy:$proj] api healthy ($i)"; ready=1; break; fi
+                echo "[deploy:$proj] api health=$h ($i/30) — retrying in 2s"; sleep 2
+              done
+              if [ "$ready" -ne 1 ]; then
+                echo "::error title=api not healthy ($proj)::api did not become healthy within ~60s (up rc=$up_rc). Last logs:"
+                docker logs "${proj}-api-1" --tail 40 2>&1 || true
+                FAILED="$FAILED $proj"; continue
+              fi
+              # Per-instance public smoke check through Traefik (TLS + Host routing), against THIS
+              # instance's own SERVICE_DOMAIN read from its /opt/$dir/.env — NOT a single global
+              # domain (so a second instance is smoke-checked on its own domain, not claude-ios's).
+              # NON-FATAL: on a first deploy the A-record / Traefik Let's Encrypt cert may still be
+              # settling; retry 12 x 5s = 60s, then emit a ::warning:: instead of failing deploy.
+              # If this instance's .env has no SERVICE_DOMAIN, skip smoke for it only.
+              inst_domain="$(grep -E '^SERVICE_DOMAIN=' .env | head -n1 | cut -d= -f2- | tr -d '\"'"'"' ' || true)"
+              if [ -z "$inst_domain" ]; then
+                echo "::warning title=Smoke skipped ($proj)::no SERVICE_DOMAIN in /opt/$dir/.env — skipping smoke for this instance"
+              else
+                url="https://$inst_domain/healthz"
+                echo "[smoke:$proj] GET $url"
+                smoke_ok=0
+                for i in $(seq 1 12); do
+                  if curl -fsS --max-time 5 "$url" >/dev/null; then
+                    echo "[smoke:$proj] healthz OK"
+                    smoke_ok=1
+                    break
+                  fi
+                  echo "[smoke:$proj] not ready ($i/12) — retrying in 5s"
+                  sleep 5
+                done
+                if [ "$smoke_ok" -ne 1 ]; then
+                  echo "::warning title=Smoke /healthz not green ($proj)::$url did not return 200 within 60s. The deploy (build+migrate+up) for $proj succeeded and api is healthy in-container; public DNS/A-record propagation or Traefik's Let's Encrypt cert (resolver 'le') may still be settling on the first deploy. Re-run this workflow once they are ready."
+                fi
+              fi
+            done
+            echo "[deploy] prune dangling build layers (best-effort)"
+            docker image prune -f || true
+            # Job verdict: red iff at least one instance REALLY failed (build/migrate/api-health).
+            if [ -n "$FAILED" ]; then
+              echo "::error title=Deploy failed::instance(s) failed:$FAILED"
+              exit 1
+            fi
+            echo "[deploy] all instances deployed and healthy"

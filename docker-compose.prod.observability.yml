@@ -1,0 +1,43 @@
+# OPTIONAL production observability overlay — Prometheus scraping the api /metrics on the
+# shared server (docs/07-deployment.md §Наблюдаемость в проде, ADR-017). Layered ON TOP of
+# docker-compose.prod.yml (shares its `default` network and the `api` service). Bring up:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.prod.observability.yml \
+#     --env-file .env up -d --build
+#
+# Prometheus reaches `api:8000` over the internal `default` network by service name (api is
+# NOT published; ADR-017). The scrape token VALUE is never committed: provide it on the server
+# at infra/observability/secrets/scrape_token (gitignored, mounted read-only) and set the SAME
+# value as METRICS_SCRAPE_TOKEN in .env (docs/05-security.md). Prometheus is published on
+# loopback only (127.0.0.1:9090) — not exposed to the internet (and never on `web`/Traefik).
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./infra/observability/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/rules:/etc/prometheus/rules:ro
+      - ./infra/observability/secrets/scrape_token:/etc/prometheus/secrets/scrape_token:ro
+      - promdata:/prometheus
+    # Loopback only — local scraping/diagnostics on the host, never internet-facing.
+    ports:
+      - "127.0.0.1:9090:9090"
+    # Internal stack network only — same as api/postgres/redis. NOT on `web` (Traefik).
+    networks:
+      - default
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  promdata:
+
+networks:
+  # Must match the network name in docker-compose.prod.yml so the overlay joins the same
+  # internal network as `api` (compose prefixes it with the project name at runtime).
+  default:

@@ -1,0 +1,20 @@
+# Apple root CA directory for REAL StoreKit JWS verification.
+#
+# WHY THIS FILE EXISTS:
+#   docker-compose.prod.yml bind-mounts `./certs/appstore` -> `/etc/appstore-certs:ro` into the
+#   `api` container, and the app reads it via APPSTORE_ROOT_CERT_DIR. A bind-mount whose SOURCE
+#   path does NOT exist makes Docker auto-create it as a ROOT-owned empty dir (ambiguous, and on
+#   some daemons surprising). Committing this `.gitkeep` guarantees `git pull` always materializes
+#   `certs/appstore` on EVERY instance host (/opt/<instance>/certs/appstore), so the mount source
+#   always pre-exists and is owned by the deploy user — never auto-created by the daemon.
+#
+# WHAT GOES HERE (per instance, ON THE SERVER only — NOT committed):
+#   The Apple root CA `AppleRootCA-G3.cer` (public, https://www.apple.com/certificateauthority/).
+#   The app loads *.cer / *.der / *.pem / *.crt from this dir (subscription/storekit.py _load_roots).
+#
+# SAFE WHEN EMPTY: with no cert here (broadnova / orvianix), _load_roots() returns [] and StoreKit
+#   stays in test-mode (STOREKIT_TEST_MODE=true) or fails closed with 422 on the real path — the
+#   container still starts normally. Only avelyra drops the real .cer (see provisioning runbook).
+#
+# DO NOT commit private keys here (.gitignore already blocks *.pem/*.key). The Apple ROOT CA is a
+# PUBLIC certificate; we still provision it on the server rather than committing it (operator step).

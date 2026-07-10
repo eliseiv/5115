@@ -1,0 +1,68 @@
+# =============================================================================
+# DEPRECATED / LEGACY — NOT USED in the shared-server + external Traefik scheme (ADR-017).
+# Kept for reference only. TLS / reverse-proxy is now the EXTERNAL Traefik's responsibility
+# (/opt/edge); our stack contains no proxy. Do NOT wire this file into docker-compose.prod.yml.
+# Superseded by Traefik docker-labels on the `api` service. See docs/07-deployment.md.
+# =============================================================================
+#
+# Reverse-proxy for the single-VPS prod stack (docs/07-deployment.md §Reverse-proxy,
+# docs/05-security.md §Транспорт + ADR-010). Caddy terminates TLS (auto-ACME / Let's Encrypt)
+# and proxies to the api container over the internal compose network (api:8000).
+#
+# SITE_DOMAIN and ACME_EMAIL are injected as env vars by docker-compose.prod.yml.
+# No secrets in this file. Validate: `caddy validate --config infra/proxy/Caddyfile`
+# (run inside the caddy image with SITE_DOMAIN/ACME_EMAIL set — see infra/deploy/README.md).
+{
+	# ACME contact for Let's Encrypt. Caddy obtains + renews certs automatically and
+	# persists them in the caddy_data volume.
+	email {$ACME_EMAIL}
+
+	# Global HTTP->HTTPS redirect is automatic in Caddy; no extra config needed.
+}
+
+{$SITE_DOMAIN} {
+	# ----------------------------------------------------------------------------
+	# /v1/preview/* — user-generated (Claude-authored) HTML/JS (ADR-010).
+	# The app sets its OWN sandbox headers (CSP: sandbox ..., X-Frame-Options: SAMEORIGIN,
+	# X-Content-Type-Options: nosniff, Cache-Control: private, no-store). The proxy MUST:
+	#   - pass the app's response headers through AS-IS (do not overwrite / duplicate),
+	#   - NOT inject Set-Cookie / session / affinity cookies on this path,
+	#   - NOT apply the global HSTS / X-Frame-Options:DENY / global CSP used elsewhere.
+	# This route is declared BEFORE the catch-all and adds NO header directives, so the
+	# upstream headers reach the client untouched (docs/07-deployment.md, docs/05-security.md).
+	# ----------------------------------------------------------------------------
+	@preview path /v1/preview/*
+	handle @preview {
+		reverse_proxy api:8000 {
+			# Real client IP for the app's anti-spoofing logic (TRUSTED_PROXY_IPS must list
+			# this proxy's source range — docs/05-security.md). Caddy appends the client IP
+			# to X-Forwarded-For and sets X-Forwarded-Proto/Host by default.
+			header_up X-Real-IP {remote_host}
+			# Do NOT add response headers here: preview headers are pass-through.
+		}
+	}
+
+	# ----------------------------------------------------------------------------
+	# Everything else — normal API surface with global security headers.
+	# ----------------------------------------------------------------------------
+	handle {
+		header {
+			# HSTS (1 year, includeSubDomains). Only on non-preview routes.
+			Strict-Transport-Security "max-age=31536000; includeSubDomains"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			# Remove server fingerprint.
+			-Server
+		}
+		reverse_proxy api:8000 {
+			header_up X-Real-IP {remote_host}
+			# Caddy sets X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host automatically.
+		}
+	}
+
+	# Structured access log to stdout (collected by the host log driver).
+	log {
+		output stdout
+		format json
+	}
+}

@@ -1,0 +1,24 @@
+# E2E / local override (compose with: docker-compose.yml + this file).
+#
+# Why: on some hosts the native PostgreSQL (5432) — and sometimes Redis (6379) —
+# already occupy those host ports, so the base compose fails to bind
+# 127.0.0.1:5432/6379. The api/migrate services talk to postgres/redis over the
+# internal compose network by SERVICE NAME (DATABASE_URL=...@postgres:5432,
+# REDIS_URL=redis://redis:6379) — host port publishing is NOT required for them
+# to work. So for e2e we simply stop publishing postgres/redis on the host.
+#
+# api keeps its host port (127.0.0.1:8000) so qa / smoke checks can reach it.
+# Semantics of the base docker-compose.yml are unchanged for everyone else.
+#
+# `!reset []` clears the `ports` list inherited from the base file (Compose v2.24+).
+
+services:
+  postgres:
+    # No host port published — reachable only inside the compose network as `postgres:5432`.
+    ports: !reset []
+
+  redis:
+    # No host port published — reachable only inside the compose network as `redis:6379`.
+    ports: !reset []
+
+  # api keeps 127.0.0.1:8000:8000 from the base file (qa/smoke needs host access).
