@@ -80,7 +80,20 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
 # existing instances are unchanged). A RAM-constrained host (e.g. novirell: shared 3.8 GB) sets a
 # lower value in its .env — see deploy/novirell.env.example (GUNICORN_WORKERS=2) and
 # docs/07-deployment.md §Sizing (recompute the DB pool: (pool_size+max_overflow)*workers).
+#
+# Worker timeout is ALSO env-driven: GUNICORN_TIMEOUT (default 90 == the previous hardcoded value, so
+# existing instances are unchanged). WHY env-driven / when to raise it: a single /v1/chat/run turn
+# can run 40-60s+ (image generation chains Responses->images->Responses) and the app's per-provider
+# budgets go up to 180s (DEEP_THINKING_TIMEOUT_SECONDS, src/app/config.py). With UvicornWorker (ASYNC)
+# gunicorn's --timeout is a WORKER-HEARTBEAT timeout, not a per-request one: uvicorn keeps notifying
+# the master from the event loop while an async upstream call is in flight, so a slow ASYNC turn does
+# NOT get killed at 90s (the real 502 came from nginx's 60s proxy_read_timeout — fixed in
+# deploy/nginx/novirell.shop.conf). BUT to keep the timeout chain consistent and defensive
+# (nginx proxy_read_timeout 300s >= gunicorn --timeout >= app provider budget <=180s) and to guard the
+# brief SYNC-CPU phases of the image path (base64 decode + BYTEA insert) against ever tripping a 90s
+# heartbeat kill under load, novirell sets GUNICORN_TIMEOUT=300 (deploy/novirell.env.example). Legacy
+# instances keep 90 (default), so their behaviour is unchanged.
 # NB: uses the `sh -c` + `exec` shell form ON PURPOSE — the JSON exec-form CMD does NOT expand
 # ${...}. `exec` replaces the shell so gunicorn stays PID 1 and receives SIGTERM (graceful drain),
 # exactly as the previous exec-form did.
-CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w ${GUNICORN_WORKERS:-4} -b 0.0.0.0:8000 --graceful-timeout 30 --timeout 90 --access-logfile - --error-logfile -"]
+CMD ["sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w ${GUNICORN_WORKERS:-4} -b 0.0.0.0:8000 --graceful-timeout 30 --timeout ${GUNICORN_TIMEOUT:-90} --access-logfile - --error-logfile -"]
