@@ -450,8 +450,15 @@ async def _run_lifespan_capturing_app_main_warnings(
     handler = _Capture(level=logging.WARNING)
     target = logging.getLogger("app.main")
     previous_level = target.level
+    previous_disabled = target.disabled
     target.addHandler(handler)
     target.setLevel(logging.WARNING)
+    # A prior test may have poisoned this logger via
+    # ``logging.config.fileConfig(..., disable_existing_loggers=True)`` (migrations/env.py),
+    # which sets ``app.main`` logger's ``disabled = True``. A disabled logger drops the record in
+    # ``Logger.handle`` BEFORE any handler runs, so ``records`` would stay empty. Force it enabled
+    # for the duration of this helper and restore the prior value in ``finally`` to stay hermetic.
+    target.disabled = False
     try:
         app = main_mod.create_app()
         async with main_mod.lifespan(app):
@@ -459,6 +466,7 @@ async def _run_lifespan_capturing_app_main_warnings(
     finally:
         target.removeHandler(handler)
         target.setLevel(previous_level)
+        target.disabled = previous_disabled
         get_settings.cache_clear()
 
     return [r.getMessage() for r in records if r.levelno == logging.WARNING]
