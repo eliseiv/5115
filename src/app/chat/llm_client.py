@@ -106,7 +106,8 @@ class GenerationOptions:
       orchestrator (an unknown mode from the API → ``422 unsupported_dialog_mode``, NOT a client
       ValueError). The OpenAI Responses client branches on it (ADR-055 §5): deep_thinking →
       reasoning + encrypted-content replay; search → the built-in web_search tool; study_learn →
-      prompt-only this sprint. Anthropic ignores it (smart-only, ADR-059 §5).
+      prompt suffix + the live quiz.generate strict tool (ADR-062). Anthropic ignores it
+      (smart-only, ADR-059 §5).
     - ``temporary``: when True the OpenAI Responses client sets ``store=False`` so the provider does
       not persist the request (ADR-056). Ignored by Anthropic.
     """

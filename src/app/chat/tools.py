@@ -304,17 +304,23 @@ QUIZ_OPTION_MAX_LENGTH = 400
 QUIZ_EXPLANATION_MAX_LENGTH = 2000
 QUIZ_MIN_OPTIONS = 2
 QUIZ_MAX_OPTIONS = 10
+QUIZ_MIN_QUESTIONS = 3
+QUIZ_MAX_QUESTIONS = 10
 
 
-class QuizGenerateArgs(_StrictModel):
-    """Args for quiz.generate (ADR-057 §3): one Study & Learn quiz card, strict schema.
+class QuizQuestionArgs(_StrictModel):
+    """One quiz question inside a quiz.generate pool (ADR-062 §1), strict schema.
 
     All fields required (OpenAI strict-mode: no optional properties). `question`/`explanation` are
     length-capped; `options` carries 2..10 variants (each length-capped); `correctIndex` is the
     0-based index of the correct variant. The `correctIndex < len(options)` invariant is enforced by
     the model_validator below (not expressible in JSON Schema) — an out-of-range index fails
-    validation and the quiz tool_use is rejected (ADR-057 §3). camelCase field names match the rest
-    of the public contract (e.g. `correctIndex`).
+    validation and the whole pool is rejected (ADR-062 §7 all-or-nothing). camelCase field names
+    match the rest of the public contract (e.g. `correctIndex`).
+
+    MUST stay a `_StrictModel` (`extra='forbid'`): its `$defs` record then carries
+    `additionalProperties: false` with every property in `required` — a hard OpenAI strict-mode
+    requirement for the nested question object (ADR-062 §5), else the provider 400s each turn.
     """
 
     question: Annotated[str, Field(min_length=1, max_length=QUIZ_QUESTION_MAX_LENGTH)]
@@ -347,10 +353,28 @@ class QuizGenerateArgs(_StrictModel):
         return value
 
     @model_validator(mode="after")
-    def _index_in_range(self) -> QuizGenerateArgs:
+    def _index_in_range(self) -> QuizQuestionArgs:
         if self.correctIndex >= len(self.options):
             raise ValueError("correctIndex must be within the options range")
         return self
+
+
+class QuizGenerateArgs(_StrictModel):
+    """Args for quiz.generate (ADR-062 §1): a POOL of 3..10 Study & Learn quiz questions, strict.
+
+    Wrapper around a list of `QuizQuestionArgs` — the pool is delivered in ONE call (ADR-062 §1), so
+    the client gets every question at once and the accumulator maps args→schema without stitching.
+    The `3..10` count (like each question's `2..10` options and the length caps) is NOT expressible
+    in the OpenAI strict schema (`minItems`/`maxItems` are stripped, ADR-062 §5) — it is enforced
+    here by Pydantic + echoed as words in the tool description. Any single violation (count, nested
+    options/lengths/`correctIndex`) makes the WHOLE pool invalid → one `ValidationError` → one
+    `invalid_quiz` degrade (ADR-062 §7 all-or-nothing).
+    """
+
+    questions: Annotated[
+        list[QuizQuestionArgs],
+        Field(min_length=QUIZ_MIN_QUESTIONS, max_length=QUIZ_MAX_QUESTIONS),
+    ]
 
 
 # --- global server-side image.generate (ADR-058) ---
@@ -453,14 +477,17 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "do not guess."
     ),
     TOOL_QUIZ_GENERATE: (
-        "Generate ONE interactive quiz card to check the learner's understanding of what you just "
-        "explained. Call this once at a natural checkpoint — after teaching a concept or finishing "
-        "a section — not on every message and never more than one quiz per point. Provide a clear "
-        "'question' (up to 1000 characters), between 2 and 10 answer 'options' (each up to 400 "
-        "characters), the 0-based 'correctIndex' of the right option (must be a valid index into "
-        "'options'), and a short 'explanation' (up to 2000 characters) of why that answer is "
-        "correct. Keep writing your normal teaching text as well: the quiz complements the "
-        "explanation, it does not replace it."
+        "Generate an interactive quiz — a POOL of between 3 and 10 questions — to check the "
+        "learner's understanding of what you just explained. Deliver the whole pool in ONE call at "
+        "a natural checkpoint (after teaching a concept or finishing a section), never split "
+        "across several calls. Provide a 'questions' array; each question has a clear 'question' "
+        "(up to 1000 characters), between 2 and 10 answer 'options' (each up to 400 characters), "
+        "the 0-based 'correctIndex' of the right option (must be a valid index into that "
+        "question's 'options', i.e. less than the number of options), and a short 'explanation' "
+        "(up to 2000 "
+        "characters) of why that answer is correct. Do NOT repeat the question wording in your "
+        "normal text and do NOT reveal or hint at the correct options or explanations there — the "
+        "quiz carries them. Keep any accompanying text short, or write none at all."
     ),
     TOOL_IMAGE_GENERATE: (
         "Generate an image from a text prompt and return a reference to it (the bytes are stored "

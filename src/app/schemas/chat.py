@@ -396,14 +396,13 @@ class ServerToolExecutionSchema(StrictModel):
     )
 
 
-class QuizSchema(StrictModel):
-    """Квиз режима Study & Learn.
+class QuizQuestionSchema(StrictModel):
+    """Один вопрос квиза режима Study & Learn.
 
-    Результат global server-side инструмента `quiz.generate`, поднятый в `ChatResponse.quiz`.
-    `options` — 2..10 вариантов; `correctIndex` — 0-based индекс правильного варианта; проверка
-    ответа выполняется на клиенте (`correctIndex` уходит клиенту — осознанный компромисс).
-    Валидатор `correctIndex < len(options)` дублирует инвариант `QuizGenerateArgs` на границе
-    ответа (защита от рассинхрона).
+    Элемент пула `QuizSchema.questions`. `options` — 2..10 вариантов; `correctIndex` — 0-based
+    индекс правильного варианта; проверка ответа выполняется на клиенте (`correctIndex` уходит
+    клиенту — осознанный компромисс). Валидатор `correctIndex < len(options)` дублирует инвариант
+    вложенного вопроса `QuizGenerateArgs` на границе ответа (защита от рассинхрона).
     """
 
     question: str = Field(description="Текст вопроса квиза.")
@@ -419,10 +418,26 @@ class QuizSchema(StrictModel):
     explanation: str = Field(description="Пояснение, почему правильный вариант верен.")
 
     @model_validator(mode="after")
-    def _check_correct_index(self) -> QuizSchema:
+    def _check_correct_index(self) -> QuizQuestionSchema:
         if self.correctIndex >= len(self.options):
             raise ValueError("correctIndex must be within the options range")
         return self
+
+
+class QuizSchema(StrictModel):
+    """Квиз режима Study & Learn — пул вопросов.
+
+    Результат global server-side инструмента `quiz.generate`, поднятый в `ChatResponse.quiz`.
+    Несёт пул из 3..10 вопросов (`questions`): пользователь получает весь набор сразу за один ход,
+    отвечает локально, результат считается на клиенте и никуда не отправляется (`correctIndex` и
+    `explanation` каждого вопроса уходят клиенту).
+    """
+
+    questions: list[QuizQuestionSchema] = Field(
+        min_length=3,
+        max_length=10,
+        description="Пул вопросов квиза (3..10). Каждый вопрос проверяется на клиенте локально.",
+    )
 
 
 class GeneratedImageRefSchema(StrictModel):
@@ -488,10 +503,12 @@ class ChatResponse(StrictModel):
     `blocked`+`max_tokens`.
 
     `quiz` — ортогонален `status`: присутствует (не `null`) только когда
-    `dialogMode=study_learn` и модель вызвала `quiz.generate`; иначе `null`/опущено. Обычно
-    сопровождает финальный `assistant_message` (квиз + пояснительный текст за один ход), но может
-    прийти и на `tool_call` (квиз выполнен до client-side инструмента) или на `blocked`+`max_tokens`
-    (раунд квиза успел отработать до обрыва). При policy-`blocked` — `null`.
+    `dialogMode=study_learn` и модель вызвала `quiz.generate`; иначе `null`/опущено. Несёт пул
+    вопросов (`quiz.questions[]`). Может прийти на `assistant_message`, на `tool_call` (квиз
+    выполнен до client-side инструмента) или на `blocked`+`max_tokens` (раунд квиза успел
+    отработать до обрыва). При policy-`blocked` — `null`. Когда `quiz` присутствует,
+    `assistantMessage` детерминированно `null` (весь контент несёт `quiz.questions[]`, рамку
+    рисует клиент).
     """
 
     status: Literal["assistant_message", "tool_call", "blocked"] = Field(
@@ -520,7 +537,9 @@ class ChatResponse(StrictModel):
         description=(
             "Текст ответа ассистента. При `status=assistant_message` — финальный ответ. При "
             "`status=tool_call` — опционально текст того же шага, если модель выдала его вместе "
-            "с вызовом инструмента (иначе `null`). При `status=blocked` — `null`."
+            "с вызовом инструмента (иначе `null`). При `status=blocked` — `null`. Когда в ответе "
+            "присутствует `quiz` (не `null`), это поле всегда `null` — весь контент несёт "
+            "`quiz.questions[]`, сопроводительный текст модели не отдаётся."
         ),
     )
     toolCalls: list[ToolCallSchema] | None = Field(
@@ -559,10 +578,11 @@ class ChatResponse(StrictModel):
     quiz: QuizSchema | None = Field(
         default=None,
         description=(
-            "Квиз режима Study & Learn. Присутствует только когда "
-            "`dialogMode=study_learn` и модель вызвала `quiz.generate`; иначе `null`/опущено. "
-            "`options` — 2..10 вариантов; `correctIndex` — 0-based индекс правильного (проверка "
-            "ответа — на клиенте). Ортогонален `status`."
+            "Квиз режима Study & Learn — пул из 3..10 вопросов (`questions[]`). Присутствует "
+            "только когда `dialogMode=study_learn` и модель вызвала `quiz.generate`; иначе "
+            "`null`/опущено. У каждого вопроса `options` — 2..10 вариантов, `correctIndex` — "
+            "0-based индекс правильного (проверка ответа — на клиенте). Когда присутствует, "
+            "`assistantMessage` — `null`. Ортогонален `status`."
         ),
     )
     images: list[GeneratedImageRefSchema] | None = Field(

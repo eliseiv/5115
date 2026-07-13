@@ -1,27 +1,33 @@
-"""Integration tests for ADR-057 — Study & Learn quiz.generate in the chat tool-loop.
+"""Integration tests for the Study & Learn quiz.generate pool in the chat tool-loop.
 
-Real PostgreSQL container; BOTH LLM clients are faked at the singleton boundary (no real network;
-the suite passes with placeholder API keys):
+ADR-057 introduced quiz.generate; **ADR-062 redesigns it into a POOL** of 3..10 questions delivered
+in ONE call (``{questions: [...]}``), and makes ``assistantMessage`` deterministically ``null``
+whenever a quiz is present (no spoiler / no duplicated question in the free text). These tests run
+against a real PostgreSQL container; BOTH LLM clients are faked at the singleton boundary (no real
+network; the suite passes with placeholder API keys):
 - the Anthropic singleton is the conftest ``fake_anthropic`` (patched by the ``client`` fixture),
 - the OpenAI singleton is faked here (``FakeOpenAIClient``) — study_learn is provider-gated to
   OpenAI (ADR-055 §4 / ADR-059), so the quiz path runs on the OpenAI instance.
 
-quiz.generate is a GLOBAL server-side tool (ADR-057 §4), executed in the tool-loop like time.now:
-«исполнение» = validate the strict args + echo the dict; a VALID quiz is lifted into
-``ChatResponse.quiz`` (last-wins); an INVALID quiz DEGRADES to a ``tool_result`` error the model
-fixes in the same turn (graceful degrade, ADR-057 §3) — never a 422 that drops the turn. Coverage:
+quiz.generate is a GLOBAL server-side tool (ADR-062 §1), executed in the tool-loop like time.now:
+«исполнение» = validate the strict POOL args + echo the dict back; a VALID pool is lifted into
+``ChatResponse.quiz.questions[]`` (last-wins); an INVALID pool DEGRADES all-or-nothing to a
+``tool_result`` error the model fixes in the same turn (graceful degrade, ADR-062 §7) — never a 422
+that drops the turn. Coverage:
 
-- happy path: valid quiz → ``ChatResponse.quiz`` filled, ``assistantMessage`` present, and
-  ``serverTools`` records quiz.generate (status completed);
-- history: the tool step is persisted with tool_use/tool_result parity;
-- degrade (one test per violation class: options count / length / correctIndex range) → NOT 422,
-  errored tool step, turn continues;
-- retry: invalid then valid in one turn → the CORRECT quiz surfaces;
+- happy path: valid pool of 3 (and 10) → ``ChatResponse.quiz.questions`` filled, each with
+  options/correctIndex/explanation; ``serverTools`` records quiz.generate (completed);
+- ADR-062 §3: ``assistantMessage`` is null when a quiz is present (assistant_message AND tool_call
+  status); a non-quiz turn keeps its ``assistantMessage``;
+- pool count bounds: 2 → degrade, 11 → degrade, 3 and 10 → valid;
+- all-or-nothing: ONE bad question (out-of-range/negative/bool index, too few options, over-length)
+  degrades the WHOLE pool → NOT 422, errored tool step, turn continues;
+- retry: invalid then valid pool in one turn → the CORRECTED pool surfaces (last-wins);
 - never valid: model persists → quiz is None when it eventually stops; 502 when it exhausts rounds;
+- ADR-062 §4: correctIndex/explanation reach the client (local check); no continuation endpoint;
 - TD-035 privacy: neither ``audit_logs.payload`` nor the degrade ``tool_result`` text carries the
-  learning content (question / options / explanation);
-- temporary chat: temporary=true + study_learn → quiz works, zero rows in
-  chat_sessions/chat_steps/tool_calls;
+  learning content; the nested loc (``questions.N.correctIndex``) leaks only indices/field/code;
+- temporary chat: temporary=true + study_learn → pool works, zero rows persisted;
 - provider gate: study_learn on an anthropic instance → 422 unsupported_dialog_mode.
 """
 
@@ -48,7 +54,8 @@ _OPTS = ["SECRET_OPT_paris", "SECRET_OPT_london", "SECRET_OPT_berlin"]
 _EXPL = "SECRET_EXPLANATION_TOKEN_paris_is_the_capital"
 
 
-def _valid_quiz(**overrides: Any) -> dict[str, Any]:
+def _card(**overrides: Any) -> dict[str, Any]:
+    """One quiz question card carrying the distinctive secret tokens (nested pool element)."""
     base: dict[str, Any] = {
         "question": _Q,
         "options": list(_OPTS),
@@ -57,6 +64,14 @@ def _valid_quiz(**overrides: Any) -> dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+def _pool(n: int = 3, *, bad: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A valid pool of ``n`` secret-token cards; ``bad`` REPLACES the last card (all-or-nothing)."""
+    cards = [_card() for _ in range(n)]
+    if bad is not None:
+        cards[-1] = bad
+    return {"questions": cards}
 
 
 class FakeOpenAIClient:
@@ -204,44 +219,49 @@ async def _run_study_learn(client: AsyncClient, uid: uuid.UUID, **extra: Any) ->
     return await client.post("/v1/chat/run", json=payload, headers=auth_headers(uid))
 
 
-# ============================ happy path ============================
+# ============================ happy path (pool) ============================
+@pytest.mark.parametrize("pool_size", [3, 10])
 @pytest.mark.asyncio
-async def test_valid_quiz_fills_response_and_records_server_tool(
+async def test_valid_pool_fills_response_and_records_server_tool(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
+    pool_size: int,
 ) -> None:
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     openai_instance.responses = [
-        openai_instance.tool_result("quiz.generate", _valid_quiz()),
+        openai_instance.tool_result("quiz.generate", _pool(pool_size)),
         openai_instance.text_result("Paris is the capital of France."),
     ]
     r = await _run_study_learn(client, uid)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "assistant_message", body
-    assert body["assistantMessage"] == "Paris is the capital of France."
-    # ADR-057 §5: the quiz is surfaced, validated, with the correct index.
+    # ADR-062 §3 (hard): a quiz is present → assistantMessage is deterministically null
+    # (spoiler-safe, no duplicated question in free text), REGARDLESS of the model's text.
+    assert body["assistantMessage"] is None
+    # ADR-062 §2: the whole pool is surfaced under quiz.questions[], each fully populated.
     quiz = body["quiz"]
     assert quiz is not None
-    assert quiz["question"] == _Q
-    assert quiz["options"] == _OPTS
-    assert quiz["correctIndex"] == 0
-    assert quiz["explanation"] == _EXPL
+    assert len(quiz["questions"]) == pool_size
+    for q in quiz["questions"]:
+        assert q["question"] == _Q
+        assert q["options"] == _OPTS
+        assert q["correctIndex"] == 0
+        assert q["explanation"] == _EXPL
     # serverTools records the server-side quiz.generate execution (completed), not a client call.
     server = body["serverTools"]
     assert any(st["toolName"] == "quiz.generate" and st["status"] == "completed" for st in server)
     assert body.get("toolCalls") in (None, [])
-    # study_learn reached the client as a generation option.
+    # study_learn reached the client as a generation option, and quiz.generate WAS offered.
     assert openai_instance.calls[0]["dialog_mode"] == "study_learn"
-    # quiz.generate WAS in the offered tool-set for this study_learn turn.
     offered = {t["name"] for t in openai_instance.calls[0]["tools"]}
     assert "quiz.generate" in offered
 
 
 @pytest.mark.asyncio
-async def test_quiz_tool_step_persisted_with_use_result_parity(
+async def test_pool_tool_step_persisted_with_use_result_parity(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
@@ -249,7 +269,7 @@ async def test_quiz_tool_step_persisted_with_use_result_parity(
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     openai_instance.responses = [
-        openai_instance.tool_result("quiz.generate", _valid_quiz(), tool_id="call_quizhist01"),
+        openai_instance.tool_result("quiz.generate", _pool(3), tool_id="call_quizhist01"),
         openai_instance.text_result("done"),
     ]
     r = await _run_study_learn(client, uid)
@@ -284,53 +304,146 @@ async def test_quiz_tool_step_persisted_with_use_result_parity(
     assert payload["toolName"] == "quiz.generate"
     assert payload["providerToolUseId"] == "call_quizhist01"
     assert payload["error"] is None
-    assert payload["result"]["correctIndex"] == 0
+    # The echoed pool round-trips through the tool step.
+    assert len(payload["result"]["questions"]) == 3
+    assert payload["result"]["questions"][0]["correctIndex"] == 0
 
 
-# ============================ graceful degrade (NOT 422) ============================
-@pytest.mark.parametrize(
-    "bad_quiz",
-    [
-        pytest.param(_valid_quiz(options=["only-one"], correctIndex=0), id="too_few_options"),
-        pytest.param(
-            _valid_quiz(options=[f"opt-{i}" for i in range(11)], correctIndex=0),
-            id="too_many_options",
-        ),
-        pytest.param(_valid_quiz(question="q" * 1001), id="question_too_long"),
-        pytest.param(
-            _valid_quiz(options=["a", "b"], correctIndex=5), id="correct_index_out_of_range"
-        ),
-        # ADR-057 §3: a JSON `true` correctIndex (bool) is rejected on the RAW input (mode="before"
-        # guard) and degrades like any other invalid quiz — NOT silently coerced to index 1.
-        pytest.param(_valid_quiz(correctIndex=True), id="correct_index_boolean"),
-    ],
-)
+# ============================ assistantMessage null-guard (ADR-062 §3) ============================
 @pytest.mark.asyncio
-async def test_invalid_quiz_degrades_without_422(
+async def test_non_quiz_turn_keeps_assistant_message(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
-    bad_quiz: dict[str, Any],
 ) -> None:
+    # ADR-062 §3: the null-guard fires ONLY when a quiz is present. A study_learn turn WITHOUT a
+    # quiz.generate call keeps its assistantMessage (the guard is not a blanket study_learn muzzle).
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     openai_instance.responses = [
-        openai_instance.tool_result("quiz.generate", bad_quiz),
-        openai_instance.text_result("Let me try again with a proper quiz."),
+        openai_instance.text_result("Here is a plain explanation, no quiz this time."),
     ]
     r = await _run_study_learn(client, uid)
-    # ADR-057 §3: the invalid quiz does NOT 422 the turn — it completes normally.
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "assistant_message"
+    assert body["quiz"] is None
+    assert body["assistantMessage"] == "Here is a plain explanation, no quiz this time."
+
+
+@pytest.mark.asyncio
+async def test_quiz_with_client_tool_zeroes_accompanying_text_on_tool_call(
+    client: AsyncClient,
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+    openai_instance: FakeOpenAIClient,
+) -> None:
+    # ADR-062 §3 (overrides ADR-024 for the quiz turn): when a quiz.generate round precedes a
+    # client-side tool_use IN THE SAME TURN, the tool_call response carries the quiz AND the model's
+    # accompanying text is dropped (assistantMessage=null) — the single _to_response assembly point
+    # covers the tool_call status too, not just assistant_message.
+    async with db_sessionmaker() as s:
+        uid = await seed_user(s, subscription="active", balance=5)
+    openai_instance.responses = [
+        # Round 1: server-side quiz.generate (executed in-loop, added to quiz_acc).
+        openai_instance.tool_result("quiz.generate", _pool(3)),
+        # Round 2: a client-side files.read WITH accompanying text → tool_call hand-off to iOS.
+        openai_instance.tool_result(
+            "files.read",
+            {"path": "notes.md"},
+            text_value="Here is the quiz and also let me read your file.",
+        ),
+    ]
+    r = await _run_study_learn(client, uid)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "tool_call", body
+    # The quiz surfaced on the tool_call response…
+    assert body["quiz"] is not None
+    assert len(body["quiz"]["questions"]) == 3
+    # …and the accompanying text was zeroed (would otherwise spoil/duplicate — ADR-062 §3).
+    assert body["assistantMessage"] is None
+    # The client-side tool is still handed off.
+    assert any(tc["name"] == "files.read" for tc in body["toolCalls"])
+
+
+# ============================ pool count bounds (degrade, ADR-062 §7) ============================
+@pytest.mark.parametrize("count", [2, 11])
+@pytest.mark.asyncio
+async def test_pool_count_out_of_bounds_degrades_without_422(
+    client: AsyncClient,
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+    openai_instance: FakeOpenAIClient,
+    count: int,
+) -> None:
+    # ADR-062 §7: a pool of 2 (below 3) or 11 (above 10) degrades all-or-nothing — NOT a 422; the
+    # model gets an invalid_quiz tool_result and the turn continues.
+    async with db_sessionmaker() as s:
+        uid = await seed_user(s, subscription="active", balance=5)
+    openai_instance.responses = [
+        openai_instance.tool_result("quiz.generate", _pool(count)),
+        openai_instance.text_result("Let me try again with the right number of questions."),
+    ]
+    r = await _run_study_learn(client, uid)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "assistant_message", body
-    # No valid quiz was produced this turn → quiz is null.
     assert body["quiz"] is None
-    # The server-side quiz.generate execution is recorded as errored.
     assert any(
         st["toolName"] == "quiz.generate" and st["status"] == "errored"
         for st in body["serverTools"]
     )
-    # The persisted tool step is errored with the machine code (turn survived).
+    sid = body["sessionId"]
+    async with db_sessionmaker() as s:
+        payload = await s.scalar(
+            text(
+                "SELECT payload FROM chat_steps WHERE session_id=:sid AND role='tool' "
+                "ORDER BY seq LIMIT 1"
+            ),
+            {"sid": sid},
+        )
+    assert payload["error"]["code"] == "invalid_quiz"
+
+
+# =============== all-or-nothing: one bad question degrades the whole pool ===============
+@pytest.mark.parametrize(
+    "bad_card",
+    [
+        pytest.param(_card(options=["only-one"], correctIndex=0), id="too_few_options"),
+        pytest.param(
+            _card(options=[f"opt-{i}" for i in range(11)], correctIndex=0), id="too_many_options"
+        ),
+        pytest.param(_card(question="q" * 1001), id="question_too_long"),
+        pytest.param(_card(options=["a", "b"], correctIndex=5), id="correct_index_out_of_range"),
+        pytest.param(_card(correctIndex=-1), id="correct_index_negative"),
+        # ADR-062 §7 + ADR-057 §3: a JSON `true` correctIndex (bool) is rejected on the RAW input
+        # (mode="before" guard) and degrades — NOT silently coerced to index 1.
+        pytest.param(_card(correctIndex=True), id="correct_index_boolean"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_single_bad_question_degrades_whole_pool_without_422(
+    client: AsyncClient,
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+    openai_instance: FakeOpenAIClient,
+    bad_card: dict[str, Any],
+) -> None:
+    # ADR-062 §7: ONE bad question among two valid ones invalidates the ENTIRE pool (no partial
+    # acceptance) and degrades — NOT a 422; the turn completes normally with quiz=null.
+    async with db_sessionmaker() as s:
+        uid = await seed_user(s, subscription="active", balance=5)
+    openai_instance.responses = [
+        openai_instance.tool_result("quiz.generate", _pool(3, bad=bad_card)),
+        openai_instance.text_result("Let me try again with a proper quiz."),
+    ]
+    r = await _run_study_learn(client, uid)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "assistant_message", body
+    assert body["quiz"] is None
+    assert any(
+        st["toolName"] == "quiz.generate" and st["status"] == "errored"
+        for st in body["serverTools"]
+    )
     sid = body["sessionId"]
     async with db_sessionmaker() as s:
         payload = await s.scalar(
@@ -345,7 +458,7 @@ async def test_invalid_quiz_degrades_without_422(
 
 # ============================ retry within the same turn ============================
 @pytest.mark.asyncio
-async def test_invalid_then_valid_quiz_surfaces_corrected_quiz(
+async def test_invalid_then_valid_pool_surfaces_corrected_pool(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
@@ -353,21 +466,22 @@ async def test_invalid_then_valid_quiz_surfaces_corrected_quiz(
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     openai_instance.responses = [
-        # Round 1: invalid (out-of-range index) → degrade. Round 2: corrected. Round 3: final text.
+        # Round 1: invalid (one question out-of-range) → degrade. Round 2: corrected pool. Round 3:
+        # final text.
         openai_instance.tool_result(
-            "quiz.generate", _valid_quiz(options=["a", "b"], correctIndex=9)
+            "quiz.generate", _pool(3, bad=_card(options=["a", "b"], correctIndex=9))
         ),
-        openai_instance.tool_result("quiz.generate", _valid_quiz(correctIndex=1)),
+        openai_instance.tool_result("quiz.generate", _pool(4, bad=_card(correctIndex=1))),
         openai_instance.text_result("Corrected quiz above."),
     ]
     r = await _run_study_learn(client, uid)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "assistant_message"
-    # last-wins: the CORRECTED quiz (correctIndex=1, full options) is surfaced.
+    # last-wins: the CORRECTED pool (4 questions, last one correctIndex=1) is surfaced.
     assert body["quiz"] is not None
-    assert body["quiz"]["correctIndex"] == 1
-    assert body["quiz"]["options"] == _OPTS
+    assert len(body["quiz"]["questions"]) == 4
+    assert body["quiz"]["questions"][-1]["correctIndex"] == 1
     # Both rounds recorded: one errored, one completed.
     statuses = sorted(
         st["status"] for st in body["serverTools"] if st["toolName"] == "quiz.generate"
@@ -377,18 +491,18 @@ async def test_invalid_then_valid_quiz_surfaces_corrected_quiz(
 
 # ============================ never valid ============================
 @pytest.mark.asyncio
-async def test_never_valid_quiz_finishes_with_null_quiz(
+async def test_never_valid_pool_finishes_with_null_quiz(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
 ) -> None:
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
-    # Three invalid quiz rounds, then the model gives up and returns plain text → quiz is null.
+    # Three invalid pool rounds (each a too-small pool), then the model gives up → quiz is null.
     openai_instance.responses = [
-        openai_instance.tool_result("quiz.generate", _valid_quiz(options=["x"], correctIndex=0)),
-        openai_instance.tool_result("quiz.generate", _valid_quiz(options=["x"], correctIndex=0)),
-        openai_instance.tool_result("quiz.generate", _valid_quiz(options=["x"], correctIndex=0)),
+        openai_instance.tool_result("quiz.generate", _pool(2)),
+        openai_instance.tool_result("quiz.generate", _pool(2)),
+        openai_instance.tool_result("quiz.generate", _pool(2)),
         openai_instance.text_result("Sorry, here is a plain explanation without a quiz."),
     ]
     r = await _run_study_learn(client, uid)
@@ -396,26 +510,26 @@ async def test_never_valid_quiz_finishes_with_null_quiz(
     body = r.json()
     assert body["status"] == "assistant_message"
     assert body["quiz"] is None
+    # No quiz present → the plain-text explanation is preserved (ADR-062 §3 guard did not fire).
+    assert body["assistantMessage"] == "Sorry, here is a plain explanation without a quiz."
     errored = [st for st in body["serverTools"] if st["status"] == "errored"]
     assert len(errored) == 3
 
 
 @pytest.mark.asyncio
-async def test_relentlessly_invalid_quiz_exhausts_rounds_502(
+async def test_relentlessly_invalid_pool_exhausts_rounds_502(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # ADR-057 §3 boundary: a model that NEVER yields a valid quiz eventually hits the shared
+    # ADR-062 §7 boundary: a model that NEVER yields a valid pool eventually hits the shared
     # MAX_SERVER_TOOL_ROUNDS guard (ADR-011 §2) → controlled 502, no billing. Rounds lowered so the
-    # test is fast; always_response makes every round an invalid quiz.
+    # test is fast; always_response makes every round an invalid pool.
     monkeypatch.setattr(get_settings(), "max_server_tool_rounds", 2)
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
-    openai_instance.always_response = openai_instance.tool_result(
-        "quiz.generate", _valid_quiz(options=["x"], correctIndex=0)
-    )
+    openai_instance.always_response = openai_instance.tool_result("quiz.generate", _pool(2))
     r = await _run_study_learn(client, uid)
     assert r.status_code == 502, r.text
     # No billing on the controlled failure (no final assistant_message).
@@ -423,20 +537,47 @@ async def test_relentlessly_invalid_quiz_exhausts_rounds_502(
     assert int(bal) == 5
 
 
+# ============================ no continuation endpoint (ADR-062 §4) ============================
+@pytest.mark.asyncio
+async def test_client_side_check_no_answer_submission_endpoint(
+    client: AsyncClient,
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+    openai_instance: FakeOpenAIClient,
+) -> None:
+    # ADR-062 §4: correctIndex/explanation reach the client (local check); there is NO endpoint to
+    # submit quiz answers back — the client scores locally, nothing is posted to the server.
+    async with db_sessionmaker() as s:
+        uid = await seed_user(s, subscription="active", balance=5)
+    openai_instance.responses = [
+        openai_instance.tool_result("quiz.generate", _pool(3)),
+        openai_instance.text_result("done"),
+    ]
+    r = await _run_study_learn(client, uid)
+    body = r.json()
+    # The client-side answer key (correctIndex + explanation) is present for every question.
+    for q in body["quiz"]["questions"]:
+        assert "correctIndex" in q
+        assert "explanation" in q
+    # No answer-submission endpoint exists (regression guard against introducing continuation).
+    app = client._transport.app  # type: ignore[attr-defined]
+    routes = {getattr(route, "path", "") for route in app.routes}
+    assert not any("quiz" in path and "answer" in path for path in routes)
+    assert "/v1/chat/quiz-result" not in routes
+    assert "/v1/quiz/answers" not in routes
+
+
 # ============================ TD-035 privacy ============================
 @pytest.mark.asyncio
-async def test_quiz_learning_content_never_leaks_to_audit_or_error(
+async def test_pool_learning_content_never_leaks_to_audit_or_error(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
 ) -> None:
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
-    # Invalid quiz carrying the distinctive content tokens → degrade builds a content-free error.
+    # Invalid pool: a bool correctIndex in the LAST question → nested loc questions.2.correctIndex.
     openai_instance.responses = [
-        openai_instance.tool_result(
-            "quiz.generate", _valid_quiz(options=["only-one"], correctIndex=0)
-        ),
+        openai_instance.tool_result("quiz.generate", _pool(3, bad=_card(correctIndex=True))),
         openai_instance.text_result("retry"),
     ]
     r = await _run_study_learn(client, uid)
@@ -453,7 +594,8 @@ async def test_quiz_learning_content_never_leaks_to_audit_or_error(
     for token in (_Q, *_OPTS, _EXPL):
         assert token not in audit_text, f"leaked into audit: {token}"
 
-    # (2) the degrade tool_result error message is content-free (built from loc+type only).
+    # (2) the degrade tool_result error message is content-free (built from loc+type only) yet DOES
+    # carry the nested field locus (indices/field names/error code — never the submitted values).
     async with db_sessionmaker() as s:
         payload = await s.scalar(
             text(
@@ -465,47 +607,13 @@ async def test_quiz_learning_content_never_leaks_to_audit_or_error(
     err_message = payload["error"]["message"]
     for token in (_Q, *_OPTS, _EXPL):
         assert token not in err_message, f"leaked into tool_result error: {token}"
-
-
-@pytest.mark.asyncio
-async def test_boolean_correct_index_degrades_content_free(
-    client: AsyncClient,
-    db_sessionmaker: async_sessionmaker[AsyncSession],
-    openai_instance: FakeOpenAIClient,
-) -> None:
-    # ADR-057 §3 + TD-035: a bool correctIndex (JSON `true`) is rejected on the RAW input
-    # (mode="before" guard) and degrades — NOT a 422, NOT silently coerced to 1 — and the resulting
-    # invalid_quiz tool_result error stays content-free (no question/options/explanation).
-    async with db_sessionmaker() as s:
-        uid = await seed_user(s, subscription="active", balance=5)
-    openai_instance.responses = [
-        openai_instance.tool_result("quiz.generate", _valid_quiz(correctIndex=True)),
-        openai_instance.text_result("retry with an integer index"),
-    ]
-    r = await _run_study_learn(client, uid)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["status"] == "assistant_message"
-    # The bool was NOT accepted as index 1 → no valid quiz this round.
-    assert body["quiz"] is None
-    sid = body["sessionId"]
-    async with db_sessionmaker() as s:
-        payload = await s.scalar(
-            text(
-                "SELECT payload FROM chat_steps WHERE session_id=:sid AND role='tool' "
-                "ORDER BY seq LIMIT 1"
-            ),
-            {"sid": sid},
-        )
-    assert payload["error"]["code"] == "invalid_quiz"
-    err_message = payload["error"]["message"]
-    for token in (_Q, *_OPTS, _EXPL):
-        assert token not in err_message, f"leaked into tool_result error: {token}"
+    # The nested loc names the offending question index + field, but no value.
+    assert "questions.2.correctIndex" in err_message
 
 
 # ============================ temporary chat ============================
 @pytest.mark.asyncio
-async def test_study_learn_quiz_in_temporary_chat_persists_nothing(
+async def test_study_learn_pool_in_temporary_chat_persists_nothing(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
@@ -513,16 +621,19 @@ async def test_study_learn_quiz_in_temporary_chat_persists_nothing(
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     openai_instance.responses = [
-        openai_instance.tool_result("quiz.generate", _valid_quiz()),
+        openai_instance.tool_result("quiz.generate", _pool(3)),
         openai_instance.text_result("ephemeral quiz explanation"),
     ]
     r = await _run_study_learn(client, uid, temporary=True, history=[])
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "assistant_message"
-    # Quiz still works in a temporary chat (global server-side tool, in-request execution, ADR-056).
+    # Pool still works in a temporary chat (global server-side tool, in-request execution, ADR-056).
     assert body["quiz"] is not None
-    assert body["quiz"]["correctIndex"] == 0
+    assert len(body["quiz"]["questions"]) == 3
+    assert body["quiz"]["questions"][0]["correctIndex"] == 0
+    # ADR-062 §3 still holds in a temporary chat.
+    assert body["assistantMessage"] is None
 
     # No persistence at all (ADR-056 §1).
     sessions = await _scalar(

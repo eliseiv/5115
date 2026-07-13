@@ -249,14 +249,16 @@ _PROVIDER_GATED_DIALOG_MODES = frozenset({"deep_thinking", "study_learn", "searc
 # workspace instructions (does not break the prompt structure / injection order). Each suffix is
 # STATIC (deterministic) so the provider prompt cache is not invalidated. `smart`/`deep_thinking`
 # carry no suffix here: smart is unchanged, and deep_thinking is driven by `reasoning.effort` on the
-# provider side (ADR-059 §3), not by prompt text. `study_learn` gets the learning suffix (this
-# sprint the quiz.generate tool is deferred — ADR-057/sprint 4 — so the suffix is its ONLY effect);
+# provider side (ADR-059 §3), not by prompt text. `study_learn` gets the learning suffix, which also
+# steers the live quiz.generate tool (ADR-062: pool via the tool only, no spoilers in text);
 # `search` gets a suffix nudging the model to use the built-in web_search tool and cite sources.
 _DIALOG_MODE_PROMPT_SUFFIX: dict[str, str] = {
     "study_learn": (
         "You are in Study & Learn mode. Teach the user: explain concepts step by step in a clear, "
         "didactic style, check understanding, and encourage active recall. Keep explanations "
-        "accurate and concise."
+        "accurate and concise. When you quiz the learner, deliver the questions as a POOL only via "
+        "the quiz.generate tool (a single call with all questions); do not repeat the questions "
+        "and do not reveal or hint at the correct answers or explanations in your normal text."
     ),
     "search": (
         "You are in Search mode. When the user's request depends on current, factual, or "

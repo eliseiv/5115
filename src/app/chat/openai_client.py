@@ -260,8 +260,8 @@ class OpenAIClient:
         - ``search`` → the built-in ``{"type": "web_search", ...}`` tool ALONGSIDE our
           function-tools (executed by the provider within one call; ``web_search_call`` items are
           never surfaced as tool_uses — see the parser below).
-        - ``study_learn`` → prompt-only this sprint (the quiz.generate tool is ADR-057/sprint 4);
-          no wire change here.
+        - ``study_learn`` → prompt suffix + the live quiz.generate strict function-tool (ADR-057/
+          ADR-062); no dedicated wire branch here (the tool rides the normal function-tool set).
         - ``temporary`` → ``store=False`` (the provider does not persist the request, ADR-056).
         Optional params use the ``openai.omit`` sentinel so they are simply not sent unless needed.
         """

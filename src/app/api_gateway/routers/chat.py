@@ -293,9 +293,15 @@ def _to_response(out: ChatRunOut) -> ChatResponse:
         )
         for st in out.server_tools
     ]
-    # ADR-057: map the validated quiz dict (QuizGenerateArgs echo) → QuizSchema; None when no
-    # quiz.generate ran this turn (non-study_learn, or the model did not call the tool).
+    # ADR-057/ADR-062: map the validated quiz dict (QuizGenerateArgs echo) → QuizSchema; None when
+    # no quiz.generate ran this turn (non-study_learn, or the model did not call the tool).
     quiz = QuizSchema.model_validate(out.quiz) if out.quiz is not None else None
+    # ADR-062 §3 (hard, normative): when a quiz is present, force assistantMessage = null — drop the
+    # model's free text for this turn regardless of status (assistant_message OR tool_call), so it
+    # cannot duplicate the questions or spoil the answers. All content rides quiz.questions[]; the
+    # client draws any framing. This is the SINGLE ChatResponse assembly point (both /chat/run and
+    # /chat/tool-result flow through _to_response), so the guarantee covers every path.
+    assistant_message = None if quiz is not None else out.assistant_message
     # ADR-058: id + metadata of each image generated this turn (bytes fetched via /v1/images/{id}).
     images = (
         [
@@ -312,7 +318,7 @@ def _to_response(out: ChatRunOut) -> ChatResponse:
         sessionId=out.session_id,
         messageStepId=out.message_step_id,
         stepId=out.step_id,
-        assistantMessage=out.assistant_message,
+        assistantMessage=assistant_message,
         toolCalls=tool_calls,
         toolCall=tool_call,
         blockReason=out.block_reason,

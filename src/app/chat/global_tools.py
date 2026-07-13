@@ -117,17 +117,21 @@ class GlobalToolHandlers:
         exactly like ``time.now``'s ``invalid_timezone`` (ADR-026 §6). It never raises → the turn is
         never dropped with a 422; the ``tool_use``/``tool_result`` pair is preserved either way.
 
-        Covers EVERY ``QuizGenerateArgs`` violation: options count outside 2..10, over-length
-        ``question``/``option``/``explanation``, ``correctIndex`` outside ``[0, len(options))``, and
-        any other schema failure — because the cleaned OpenAI-strict schema cannot express these
-        invariants (ADR-057 §2), a violation by the model is expected, not an anomaly.
+        Covers EVERY ``QuizGenerateArgs`` violation, all-or-nothing over the pool (ADR-062 §7):
+        questions count outside 3..10 (incl. empty list), and for ANY question — options count
+        outside 2..10, over-length ``question``/``option``/``explanation``, ``correctIndex`` outside
+        ``[0, len(options))`` — plus any other schema failure. The wrapper + nested list is ONE
+        pydantic model, so ``model_validate`` raises a SINGLE ``ValidationError`` for any (nested)
+        violation. Because the cleaned OpenAI-strict schema cannot express these invariants
+        (ADR-062 §5), a violation by the model is expected, not an anomaly.
 
         TD-035 (learning-content redaction): the quiz text (``question``/``options``/
         ``explanation``) is user/learning content. It is NEVER logged nor written to an audit
         payload, and NEVER placed in the degrade message. The error reports WHICH field/constraint
-        failed (field locus + machine error-type from pydantic, e.g. ``options:too_long``), never
-        the submitted values — ``str(ValidationError)`` embeds ``input_value`` (the content), so it
-        is deliberately NOT used. Only the tool name/status/short code leave this path.
+        failed (nested field locus + machine error-type from pydantic, e.g.
+        ``questions.2.correctIndex:greater_than_equal`` — only indices/field names/error codes),
+        never the submitted values — ``str(ValidationError)`` embeds ``input_value`` (the content),
+        so it is deliberately NOT used. Only the tool name/status/short code leave this path.
         """
         try:
             validated = QuizGenerateArgs.model_validate(args).model_dump()
@@ -142,9 +146,10 @@ class GlobalToolHandlers:
             )
             return ToolExecution.error(
                 "invalid_quiz",
-                "quiz arguments are invalid; regenerate the quiz within the limits "
-                "(2-10 options; question<=1000, each option<=400, explanation<=2000 chars; "
-                "0 <= correctIndex < number of options). Failed constraints: " + ", ".join(reasons),
+                "quiz arguments are invalid; regenerate the whole quiz pool within the limits "
+                "(3-10 questions; each: 2-10 options; question<=1000, each option<=400, "
+                "explanation<=2000 chars; 0 <= correctIndex < number of options). "
+                "Failed constraints: " + ", ".join(reasons),
             )
         return ToolExecution.ok(validated)
 
