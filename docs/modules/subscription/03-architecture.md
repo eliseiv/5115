@@ -54,3 +54,20 @@ Env-gated режим для e2e/CI ([TD-007](../../100-known-tech-debt.md), по
   идемпотентно по `transactionId` + audit), без изменений.
 - Активен только при `STOREKIT_TEST_MODE=true` И непустом `STOREKIT_TEST_SECRET`; при включении —
   WARNING в лог на старте. Test-payload не логируется.
+
+## Доверие локальному серту Xcode (STOREKIT_TRUST_ANY_XCODE_CERT)
+Отдельный env-флаг для **пред-релизного тестового инстанса** ([ADR-061](../../adr/ADR-061-storekit-trust-any-xcode-cert.md),
+[TD-039](../../100-known-tech-debt.md)). Ортогонален `STOREKIT_TEST_MODE`: касается **ES256-пути**
+`_verify_real_transaction`, а не HS256-ветки.
+- **`STOREKIT_TRUST_ANY_XCODE_CERT=false` (дефолт, prod):** поведение не меняется — реальный путь
+  требует Apple root CA и заякоривания цепочки (fail-closed).
+- **`STOREKIT_TRUST_ANY_XCODE_CERT=true` (тестовый инстанс):** КОГДА subject **CN листа** (`chain[0]`)
+  == **`"StoreKit Testing in Xcode"`** — пропускаются **оба** гейта заякоривания (`if not self._roots`
+  и `_verify_chain`), НО ES256-подпись листа проверяется штатно (`jwt.decode` публичным ключом листа;
+  невалидная подпись → `ValidationFailedError`) + обычный `_normalize_payload`. Так принимается
+  локальная StoreKit Testing-транзакция с любой машины Xcode (самоподписанный серт, цепочка из одного
+  серта), но токен остаётся внутренне-целостным.
+- **Границы:** CN ≠ `StoreKit Testing in Xcode` → штатный реальный путь до Apple root (флаг **не**
+  ослабляет проверку настоящих Apple-транзакций); флаг on + CN не совпал → обычный путь; HS256
+  test-mode флаг не касается. При `true` — WARNING в лог на старте. **ОТКЛЮЧИТЬ перед продом**
+  ([TD-039](../../100-known-tech-debt.md)).
