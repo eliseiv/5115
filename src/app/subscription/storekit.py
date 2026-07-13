@@ -25,11 +25,31 @@ from typing import Any
 import jwt
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
+from cryptography.x509.oid import NameOID
 
 from app.config import get_settings
 from app.errors import ValidationFailedError
 
 logger = logging.getLogger("app.subscription.storekit")
+
+# ADR-061 / TD-039: leaf subject CN of a local Xcode StoreKit Testing self-signed cert
+# (full subject `O=StoreKit Testing in Xcode, CN=StoreKit Testing in Xcode`). Exact CN match.
+_XCODE_TESTING_CERT_CN = "StoreKit Testing in Xcode"
+
+
+def _leaf_cn_matches_xcode(leaf: x509.Certificate) -> bool:
+    """True only when the leaf has exactly one CN equal to `_XCODE_TESTING_CERT_CN`.
+
+    Missing / multiple CNs, or ANY exception while extracting the CN, are treated as a
+    non-match (fail-safe): no positive match => the caller keeps the normal fail-closed path.
+    """
+    try:
+        attributes = leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if len(attributes) != 1:
+            return False
+        return attributes[0].value == _XCODE_TESTING_CERT_CN
+    except Exception:  # noqa: BLE001 - fail-safe: any extraction error => non-match
+        return False
 
 
 @dataclass(frozen=True)
@@ -115,6 +135,10 @@ class StoreKitVerifier:
         # never weakens the real ES256/x5c path. Default false => prod unchanged.
         self._test_secret = settings.storekit_test_secret
         self._test_mode = settings.storekit_test_mode and bool(self._test_secret)
+        # ADR-061 / TD-039: trust any self-signed local Xcode StoreKit Testing cert on the ES256
+        # path. Default false => prod fail-closed; real Apple path never weakened. Pre-release
+        # test instance only. Startup WARNING is emitted in app.main lifespan (ADR-061 §9).
+        self._trust_any_xcode_cert = settings.storekit_trust_any_xcode_cert
 
     @staticmethod
     def _load_roots(cert_dir: str) -> list[x509.Certificate]:
@@ -165,13 +189,21 @@ class StoreKitVerifier:
         chain = _load_certificate_chain(signed_transaction)
         leaf = chain[0]
 
-        if not self._roots:
-            # No trust anchor configured (Q-007-1): cannot complete chain verification.
-            raise ValidationFailedError(
-                "App Store root certificates not configured (APPSTORE_ROOT_CERT_DIR); "
-                "cannot verify StoreKit transaction"
-            )
-        _verify_chain(chain, self._roots)
+        # ADR-061 / TD-039: trust a self-signed local Xcode StoreKit Testing cert. ONLY when the
+        # flag is on AND the leaf CN matches _XCODE_TESTING_CERT_CN do we skip BOTH anchoring
+        # gates (empty-roots refusal and _verify_chain). The leaf ES256 signature below is ALWAYS
+        # verified — the flag never disables signature verification. Any other cert (real Apple
+        # sandbox/prod, CN mismatch) keeps the full fail-closed path even when the flag is on.
+        trust_xcode = self._trust_any_xcode_cert and _leaf_cn_matches_xcode(leaf)
+
+        if not trust_xcode:
+            if not self._roots:
+                # No trust anchor configured (Q-007-1): cannot complete chain verification.
+                raise ValidationFailedError(
+                    "App Store root certificates not configured (APPSTORE_ROOT_CERT_DIR); "
+                    "cannot verify StoreKit transaction"
+                )
+            _verify_chain(chain, self._roots)
 
         leaf_pubkey = leaf.public_key()
         try:

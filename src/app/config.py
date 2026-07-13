@@ -198,6 +198,13 @@ class Settings(BaseSettings):
     # never logged (05-security.md).
     storekit_test_mode: bool = Field(default=False, alias="STOREKIT_TEST_MODE")
     storekit_test_secret: str = Field(default="", alias="STOREKIT_TEST_SECRET")
+    # Trust ANY self-signed local Xcode StoreKit Testing cert (CN `StoreKit Testing in Xcode`)
+    # on the ES256 path: skip both anchoring gates for that CN while still verifying the leaf
+    # ES256 signature. Default false => prod fail-closed (real Apple path unchanged). ONLY for a
+    # pre-release test instance (ADR-061 / TD-039). Not a secret.
+    storekit_trust_any_xcode_cert: bool = Field(
+        default=False, alias="STOREKIT_TRUST_ANY_XCODE_CERT"
+    )
 
     # --- Billing (ADR-006) ---
     subscription_credits_per_period: int = Field(

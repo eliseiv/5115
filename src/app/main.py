@@ -57,6 +57,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "STOREKIT_TEST_MODE is ENABLED — accepting HS256 test transactions. "
             "MUST be false in production."
         )
+    if settings.storekit_trust_any_xcode_cert:
+        # ADR-061 §9 (TD-039). Payload/token never logged.
+        logger.warning(
+            "STOREKIT_TRUST_ANY_XCODE_CERT is ENABLED — accepting any self-signed Xcode "
+            "StoreKit Testing certificate. MUST be false in production."
+        )
     yield
     await dispose_engine()
     await close_redis()
