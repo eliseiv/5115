@@ -22,6 +22,13 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
 
 
 async def _create_workspace(
@@ -47,7 +54,7 @@ async def _run_then_continue(
     calls[0] = turn-0 create_message, calls[-1] = continuation create_message.
     """
     fake.responses = [
-        fake.tool_result("files.read", {"path": "a.txt"}),
+        fake.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake.text_result("the answer"),
     ]
     body: dict[str, object] = {"userId": str(uid), "message": "go", "mode": "credits"}

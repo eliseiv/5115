@@ -46,12 +46,11 @@ def test_offer_set_without_project_includes_time_now_excludes_site() -> None:
     names = {to_domain_tool_name(d["name"]) for d in defs}
     assert TOOL_TIME_NOW in names
     assert names.isdisjoint(SERVER_SIDE_TOOLS)
-    # client-side tools remain offered; total = 8 client-side + time.now + image.generate (ADR-058:
-    # the key-gate is satisfied — conftest forces a non-empty OPENAI_API_KEY — so the GLOBAL
-    # server-side image.generate stays; only project-scoped site.* are dropped).
-    assert "files.read" in names
+    # ADR-063: no client-side tools remain; total = time.now + image.generate (ADR-058: the key-gate
+    # is satisfied — conftest forces a non-empty OPENAI_API_KEY — so the GLOBAL server-side
+    # image.generate stays; only project-scoped site.* are dropped; quiz.generate dialog-gated out).
     assert "image.generate" in names
-    assert len(defs) == 10
+    assert len(defs) == 2
 
 
 def test_offer_set_with_project_includes_both_time_now_and_site() -> None:
@@ -59,8 +58,8 @@ def test_offer_set_with_project_includes_both_time_now_and_site() -> None:
     names = {to_domain_tool_name(d["name"]) for d in defs}
     assert TOOL_TIME_NOW in names
     assert names >= SERVER_SIDE_TOOLS
-    # 8 client-side + 5 site.* + time.now + image.generate (quiz.generate is dialog-gated out).
-    assert len(defs) == 15
+    # ADR-063: 5 site.* + time.now + image.generate = 7 (quiz.generate is dialog-gated out).
+    assert len(defs) == 7
 
 
 def test_time_now_definition_carries_description_and_schema() -> None:

@@ -21,6 +21,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
+
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
@@ -157,7 +165,7 @@ async def test_storage_invariant_and_no_heavy_replay_in_tool_loop(
 
     # run (with attachment) -> tool_call ; tool-result -> assistant_message.
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake_anthropic.text_result("final"),
     ]
     data_b64 = _b64(_PNG)

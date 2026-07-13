@@ -114,15 +114,13 @@ _TIME_NOW_INSTRUCTION = (
 # for each mode's prompt (no scattered hardcoding). The set of tools offered to Claude is
 # unchanged in this sprint (Q-012-1 default deferred); only the system prompt varies.
 _SYSTEM_PROMPT_CHAT = (
-    "You are a helpful assistant integrated into an iOS app. You can call tools that the "
-    "user's device executes locally (files, calendar, reminders). Use tools when needed and "
+    "You are a helpful assistant integrated into an iOS app. Use tools when needed and "
     "respond concisely. " + _TIME_NOW_INSTRUCTION
 )
 _SYSTEM_PROMPT_CODE = (
     "You are a coding assistant integrated into an iOS app. Favor precise, technical answers: "
-    "produce correct, idiomatic code with brief explanations. You can call tools that the "
-    "user's device executes locally (files, calendar, reminders) and server-side site tools. "
-    "Use tools when needed and respond concisely. " + _TIME_NOW_INSTRUCTION
+    "produce correct, idiomatic code with brief explanations. You can use server-side site "
+    "tools to build websites. Use tools when needed and respond concisely. " + _TIME_NOW_INSTRUCTION
 )
 
 

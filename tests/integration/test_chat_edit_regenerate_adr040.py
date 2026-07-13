@@ -40,6 +40,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.chat.repository import ChatRepository
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
+
 
 _INSTRUCTIONS = "ALWAYS_REPLY_IN_HAIKU"
 _KNOWLEDGE_BLOB = "WORKSPACE_KNOWLEDGE_BLOB_UNIQUE"
@@ -223,7 +231,7 @@ async def test_edit_deletes_orphan_tool_calls_of_truncated_turns(
 
     # Turn 1: client-side tool_call (files.read) → completes → final. A tool_calls row is created.
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake_anthropic.text_result("done"),
     ]
     r1 = await client.post(
@@ -523,7 +531,7 @@ async def test_edit_with_open_tool_loop_clears_pending(
 
     # Turn 1: assistant asks for a client-side tool but the client NEVER returns the result →
     # a pending tool_call + an unclosed barrier remain.
-    fake_anthropic.responses = [fake_anthropic.tool_result("files.read", {"path": "a.txt"})]
+    fake_anthropic.responses = [fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"})]
     r1 = await client.post(
         "/v1/chat/run",
         json={"userId": str(uid), "message": "open a loop", "mode": "credits"},

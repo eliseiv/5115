@@ -53,7 +53,7 @@
   - **Биллинг от выбора модели не зависит** (1 кредит = 1 сообщение, [ADR-006](../../adr/ADR-006-credit-billing-and-subscription-grant.md)). Возвращаемый `usage.model` отражает фактически использованную модель.
   - Инстанс одно-провайдерный ([ADR-033](../../adr/ADR-033-llm-provider-abstraction.md)) → allowlist = модели активного провайдера; выбрать чужую (Claude на openai-инстансе) нельзя.
 - **`projectId` (опц., [ADR-022](../../adr/ADR-022-optional-project-and-tool-gating.md)).** Основной поток сервиса — **чат-агрегатор**; website-builder — **опциональная** фича. Поле фиксируется на сессию при создании (как `mode`/`assistantMode`):
-  - **без `projectId`** → «чистый чат»: сессия создаётся с `project_id = NULL`; server-side `site.*` tools **НЕ предлагаются** Claude (нет проекта для записи); прочие client-side tools (`files.*`/`calendar.*`/`reminders.*`) доступны по обычным правилам;
+  - **без `projectId`** → «чистый чат»: сессия создаётся с `project_id = NULL`; server-side `site.*` tools **НЕ предлагаются** Claude (нет проекта для записи); global server-side (`time.now`, при `study_learn` — `quiz.generate`, при заданном ключе — `image.generate`) доступны по обычным правилам. Client-side инструментов больше нет ([ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md));
   - **с `projectId`** → website-builder доступен: `site.*` входят в tool-набор, как сейчас.
   - **Resume-сессия:** `projectId` берётся из сессии (`chat_sessions.project_id`); поле запроса при resume **игнорируется** (не ошибка) — единообразно с `mode`/`assistantMode` ([ADR-022 §4](../../adr/ADR-022-optional-project-and-tool-gating.md)). Гейтинг tools — [03-architecture.md §Гейтинг tools](03-architecture.md#гейтинг-site-tools-по-наличию-проекта-adr-022). Биллинг/policy от наличия `projectId` **не зависят** (1 кредит = 1 сообщение).
 - **`mode` vs `assistantMode` ([ADR-012](../../adr/ADR-012-assistant-mode-vs-billing-mode.md)):** `mode` = `billing_mode` (оплата, без изменений — обратная совместимость). `assistantMode` = тип ассистента (chat|code), **новое опциональное** поле. При отсутствии → `user_preferences.default_assistant_mode` (модуль [preferences](../preferences/README.md)), при отсутствии preferences → `chat`. `assistantMode` влияет на base-system-prompt и состав tool-реестра ([Q-012-1](../../99-open-questions.md)), **НЕ** на policy/billing.
@@ -129,7 +129,7 @@
   "images": [ { "imageId": "uuid", "contentType": "image/png", "size": 0 } ]
 }
 ```
-- **`toolCalls[]` (множественный, [ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)) присутствует только при `status=tool_call`** — **ВСЕ** client-side tool-вызовы текущего assistant-хода (parallel tool use), в порядке блоков ответа Claude. Каждый элемент `{ id (доменный UUID = tool_calls.id), name (dot), args }`. **Server-side `site.*` в `toolCalls[]` НЕ попадают** (исполняются на бэке в tool-loop, [ADR-011](../../adr/ADR-011-server-side-tools.md)) — массив несёт только client-side (`files.*`/`calendar.*`/`reminders.*`).
+- **`toolCalls[]` (множественный, [ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)) присутствует только при `status=tool_call`** — **ВСЕ** client-side tool-вызовы текущего assistant-хода (parallel tool use), в порядке блоков ответа Claude. Каждый элемент `{ id (доменный UUID = tool_calls.id), name (dot), args }`. **Server-side `site.*` в `toolCalls[]` НЕ попадают** (исполняются на бэке в tool-loop, [ADR-011](../../adr/ADR-011-server-side-tools.md)). **С [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md) client-side инструментов больше нет — в штатном потоке `status=tool_call`/`toolCalls[]` не возникает; поле сохранено для обратной совместимости и будущих client-side инструментов.**
 - **`toolCall` (одиночный) — deprecated, обратная совместимость ([ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)).** Присутствует при `status=tool_call` и **равен `toolCalls[0]`** (первый client-side вызов хода). Корректный клиент обязан читать `toolCalls[]` (на мульти-tool ходе одиночный `toolCall` неполон → continuation сломается). Удаление одиночного поля — отдельным ADR после миграции iOS.
 - `toolCall.id` / `toolCalls[].id` — **доменный UUID** (`= tool_calls.id`), стабильный публичный идентификатор для iOS и для последующего `/chat/tool-result`. Внутренний Anthropic `tool_use.id` (`toolu_...`) наружу **не** отдаётся (хранится в `tool_calls.provider_tool_use_id`, [ADR-008](../../adr/ADR-008-provider-tool-use-id.md)).
 - **`serverTools[]` — выполненные server-side инструменты за этот вызов ([ADR-028](../../adr/ADR-028-projectid-in-chat-list-and-server-tools-in-chat-response.md); поле `toolCallId` — [ADR-030](../../adr/ADR-030-toolcallid-in-server-tools.md); аддитивно):** список server-side инструментов (`site.*` project-scoped [ADR-011](../../adr/ADR-011-server-side-tools.md), `time.now` global [ADR-026](../../adr/ADR-026-global-server-side-tools-and-time-now.md)), которые backend исполнил в tool-loop **этого** вызова (`/chat/run` или один `/chat/tool-result`-continuation), в порядке выполнения. **Дополняет** `toolCalls[]` (там — только client-side, исполняемые iOS): server-side в `toolCalls[]` по-прежнему **НЕ** входят. Каждый элемент: `{ toolCallId, toolName, status, summary? }`:
@@ -140,7 +140,7 @@
   - **Семантика «за один вызов» (не за сессию):** перечисляет server-side, выполненные в этом обращении. Дубликаты с историей `/chats` — ожидаемы (удобство флоу, не замена истории).
   - **Присутствие по статусам:** при `status=assistant_message` и `status=tool_call` — **присутствует** (может быть пустым `[]`, если server-side не выполнялись; при `tool_call` перечисляет server-side, отработавшие **до** того, как ход уперся в client-side вызов). При `status=blocked`+**policy** (`blockReason ≠ max_tokens`) — **пустой `[]`** (policy-block до генерации, tool-loop не запускался). При `status=blocked`+**`max_tokens`** ([ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)) — **может быть НЕ пустым** (server-side раунды могли отработать до обрыва финального витка). Поле присутствует всегда (хотя бы как `[]`) при `assistant_message`/`tool_call`/`blocked`.
   - **Idempotent replay → `serverTools=[]` (by-design, [ADR-028](../../adr/ADR-028-projectid-in-chat-list-and-server-tools-in-chat-response.md)):** повторный `/chat/tool-result` для **уже закрытого** хода возвращает сохранённый финальный шаг (`_render_saved_step`, continuation выполняется один раз на закрытие барьера — [ADR-005](../../adr/ADR-005-idempotency-ledger.md)/[ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)); при таком реплее `serverTools=[]` — server-side выполнения **НЕ** реконструируются (реплей отдаёт финальный результат, не воспроизводит tool-loop). Полный набор server-side выполнений хода доступен в истории `GET /v1/chats/{id}`.
-  - **Биллинг неизменен ([ADR-006](../../adr/ADR-006-credit-billing-and-subscription-grant.md)):** server-side раунды не списывают кредиты; `serverTools[]` информационно, на amount не влияет. Аддитивно/обратносовместимо: старые клиенты игнорируют. Каталог инструментов и их число (14) не меняются.
+  - **Биллинг неизменен ([ADR-006](../../adr/ADR-006-credit-billing-and-subscription-grant.md)):** server-side раунды не списывают кредиты; `serverTools[]` информационно, на amount не влияет. Аддитивно/обратносовместимо: старые клиенты игнорируют. Число каталога инструментов этим ADR-006 не затрагивается.
   - **Связь со steps-view:** идея `summary` переиспользована из `StepsViewStepSchema`, но это **отдельное** поле — только server-side выполнения, `status` (`completed`/`errored`) вместо `kind`. steps-view (`GET /v1/chats/{id}/steps`) — отдельный диагностический срез истории; `serverTools[]` — inline-индикатор в самом ответе генерации.
 - **Контракт Anthropic tool-loop ([ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)):** на КАЖДЫЙ `tool_use` ассистент-хода в следующем витке обязан быть `tool_result`. Поэтому клиент обязан исполнить и вернуть результаты на **все** `toolCalls[]` (см. `/chat/tool-result` батч) — иначе continuation не соберётся (Anthropic `400` → `502`). Одиночный `toolCall` достаточен только когда `len(toolCalls)==1`.
 - `blockReason` присутствует только при `status=blocked`.
@@ -221,8 +221,7 @@
 
 ## Классы tools: client-side vs server-side ([ADR-011](../../adr/ADR-011-server-side-tools.md), [ADR-026](../../adr/ADR-026-global-server-side-tools-and-time-now.md))
 Три класса инструментов ([ADR-026 §1](../../adr/ADR-026-global-server-side-tools-and-time-now.md)):
-- **client-side** (`files.*`, `calendar.*`, `reminders.*`) — исполняет **iOS-клиент**: backend отдаёт `status=tool_call`,
-  ждёт `tool_result` через `/v1/chat/tool-result`. Описаны в этом документе.
+- **client-side** — исполняет **iOS-клиент**: backend отдаёт `status=tool_call`, ждёт `tool_result` через `/v1/chat/tool-result`. **С [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md) в этом классе НЕТ зарегистрированных инструментов** — семейства `files.*`/`calendar.*`/`reminders.*` удалены из сервиса. Класс и его протокол (`toolCalls[]`, барьер хода, `/v1/chat/tool-result`, gate `include_client_side` [ADR-056](../../adr/ADR-056-temporary-chat.md)) **сохранены** для обратной совместимости, реплея старых сессий и будущих client-side инструментов, но в штатном потоке `status=tool_call` больше не возникает. Судьба протокола — [Q-063-1](../../99-open-questions.md).
 - **server-side, project-scoped** (`site.*`, website-builder, `SERVER_SIDE_TOOLS`) — исполняет **backend** немедленно в tool-loop, формирует `tool_result` сам
   и продолжает к Anthropic **без** round-trip к iOS; **НЕ** отдаётся клиенту как `status=tool_call`. **Требует проекта.** Схемы и поведение —
   [modules/website-builder/02-api-contracts.md](../website-builder/02-api-contracts.md), [ADR-011](../../adr/ADR-011-server-side-tools.md).
@@ -265,59 +264,24 @@
 - **Биллинг:** раунд `time.now` не добавляет списаний — 1 кредит = 1 сообщение ([ADR-006](../../adr/ADR-006-credit-billing-and-subscription-grant.md)); списание один раз на финальном `assistant_message`.
 - **Clock-провайдер:** время берётся через инъектируемый `Clock` (детерминизм qa, [ADR-026 §8](../../adr/ADR-026-global-server-side-tools-and-time-now.md), [06-testing-strategy.md](../../06-testing-strategy.md)), не прямой `datetime.now()`.
 
-## Tools (backend ↔ iOS, client-side) — строго типизированные схемы
-Backend только инициирует tool-call; исполняет клиент. Все мутирующие tools (`files.write`, `files.mkdir`, `calendar.create_events`, `reminders.create`) → audit-запись. Server-side `site.write_file`/`site.delete` также мутирующие (audit) — см. website-builder.
+## Tools (backend ↔ iOS, client-side) — удалены ([ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md))
+Client-side инструменты `files.read`/`files.write`/`files.list`/`files.mkdir`, `calendar.read`/`calendar.create_events`, `reminders.read`/`reminders.create` **удалены из сервиса** ([ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md), решение владельца). Backend их не предлагает модели, `GET /v1/tools` не перечисляет, iOS не реализует. Их прежние строго типизированные схемы args/result и контракт календарных инструментов ([ADR-027](../../adr/ADR-027-calendar-read-contract-alignment.md), Superseded) сохранены **только** в теле ADR-027/ADR-063 как исторический срез. В классе client-side больше нет зарегистрированных инструментов (см. раздел «Классы tools» выше); протокол-машинерия остаётся спящей.
 
-### Имена tools: доменный (iOS) vs Anthropic-формат
-Публичный контракт с iOS (ТЗ §5) использует **доменные имена с точкой** (`files.read`, `calendar.create_events`, …). Anthropic Messages API требует имя tool по шаблону `^[a-zA-Z0-9_-]{1,128}$` — **точка недопустима**, dotted-имя → `400 invalid_request_error` (BUG-3, воспроизведено: dotted→400, underscore→200).
+### Имена tools: доменный (iOS) vs Anthropic-формат — нормативные правила маппинга
+Публичный контракт с iOS (ТЗ §5) использует **доменные имена с точкой** (`site.write_file`, `time.now`, …). Anthropic/OpenAI требуют имя tool по шаблону `^[a-zA-Z0-9_-]{1,128}$` (Anthropic) / `{1,64}$` (OpenAI) — **точка недопустима**, dotted-имя → `400` (BUG-3). Поэтому действует двунаправленный маппинг `domain-name (точка) ↔ transport-name (подчёркивание)` (детерминированная замена `.`→`_`, статическая таблица `_DOMAIN_TO_ANTHROPIC`). Актуальный набор пар — только для оставшихся server-side инструментов (`site.*`, `time.now`, `quiz.generate`, `image.generate`); маппинг server-side `site.*` — [website-builder/02-api-contracts.md](../website-builder/02-api-contracts.md).
 
-**Решение (без breaking change §5):** ввести двунаправленный маппинг `domain-name (точка) ↔ anthropic-name (подчёркивание)`. Преобразование детерминированное — замена `.`→`_`:
+**Правила маппинга (нормативно, применяются к оставшимся инструментам):**
+- Маппинг — единственный источник истины для соответствия имён; набор tools фиксирован, маппинг — статическая таблица (двунаправленный dict). Обратный маппинг (`transport-name → domain-name`) валидирует, что провайдер вернул известный tool; неизвестное имя → `UnknownToolNameError` (upstream-аномалия, не доходит до iOS).
+- При **сборке запроса** к провайдеру (поле `tools[].name`) backend подставляет **transport-name**.
+- При **парсинге ответа** (`content` block `type=tool_use`) backend применяет **обратный маппинг** → доменное имя. Наружу (`toolCall.name`, `tool_calls.tool_name` в БД/audit, история) — **только доменный формат с точкой**.
+- Строгая типизация args привязана к **доменным именам**; transport-имена — исключительно деталь слоя провайдер-клиента.
 
-| Domain-name (iOS-facing, публичный) | Anthropic-name (только в Anthropic tool definitions) |
-|---|---|
-| `files.read` | `files_read` |
-| `files.write` | `files_write` |
-| `files.list` | `files_list` |
-| `files.mkdir` | `files_mkdir` |
-| `calendar.read` | `calendar_read` |
-| `calendar.create_events` | `calendar_create_events` |
-| `reminders.read` | `reminders_read` |
-| `reminders.create` | `reminders_create` |
-
-**Правила маппинга (нормативно):**
-- Маппинг — единственный источник истины для соответствия имён; набор tools фиксирован (8 шт.), поэтому маппинг — статическая таблица (двунаправленный dict), а не «слепое» преобразование строк на лету. Обратный маппинг (`anthropic-name → domain-name`) валидирует, что Claude вернул известный tool; неизвестное имя → ошибка обработки tool_use (трактуется как upstream-аномалия, не доходит до iOS).
-- При **сборке запроса** к Anthropic (`messages.create`, поле `tools[].name`) backend подставляет **anthropic-name**.
-- При **парсинге ответа** Claude (`content` block `type=tool_use`, поле `name`) backend применяет **обратный маппинг** → доменное имя. Наружу — в `toolCall.name` ответов `/v1/chat/run` и `/v1/chat/tool-result`, а также в `tool_calls.tool_name` (БД/audit) — идёт **только доменный формат с точкой**.
-- Строгая типизация args/result привязана к **доменным именам** (таблица схем ниже не меняется). Anthropic-имена — исключительно транспортная деталь слоя Anthropic-клиента и нигде, кроме поля `tools[].name`/`tool_use.name` протокола Anthropic, не фигурируют.
-- Публичный tool-контракт с iOS (`toolCall.name`, схемы args/result) **не меняется** — это не breaking change.
-
-| Tool | Тип | Args schema | Result schema |
-|---|---|---|---|
-| `files.read` | read | `{ "path": string }` | `{ "path": string, "content": string, "encoding": "utf8\|base64", "size": int }` |
-| `files.write` | mutate | `{ "path": string, "content": string, "encoding": "utf8\|base64", "overwrite": bool }` | `{ "path": string, "bytesWritten": int }` |
-| `files.list` | read | `{ "path": string, "recursive": bool }` | `{ "entries": [ { "name": string, "path": string, "isDir": bool, "size": int } ] }` |
-| `files.mkdir` | mutate | `{ "path": string, "createIntermediates": bool }` | `{ "path": string, "created": bool }` |
-| `calendar.read` | read | `{ "start": "ISO8601 datetime", "end": "ISO8601 datetime", "calendarId": string? }` ([ADR-027](../../adr/ADR-027-calendar-read-contract-alignment.md)) | `{ "events": [ { "id": string, "title": string, "start": "ISO8601 datetime", "end": "ISO8601 datetime", "location": string?, "notes": string? } ] }` |
-| `calendar.create_events` | mutate | `{ "events": [ { "title": string, "start": "ISO8601 datetime", "end": "ISO8601 datetime", "location": string?, "notes": string?, "calendarId": string? } ] }` | `{ "created": [ { "id": string, "title": string } ] }` |
-| `reminders.read` | read | `{ "listId": string?, "includeCompleted": bool }` | `{ "reminders": [ { "id": string, "title": string, "due": "ISO8601"?, "completed": bool, "notes": string? } ] }` |
-| `reminders.create` | mutate | `{ "reminders": [ { "title": string, "due": "ISO8601"?, "notes": string?, "listId": string? } ] }` | `{ "created": [ { "id": string, "title": string } ] }` |
-
-### Общие правила схем
+### Общие правила схем (оставшиеся server-side инструменты)
 - Все схемы — Pydantic v2, `extra='forbid'`.
-- Даты — ISO8601 (RFC3339), UTC или с offset. **Исключение:** календарные `start`/`end` (`calendar.read`, `calendar.create_events`) — ISO8601-datetime в локальном времени **без** offset (naive local), см. раздел «Контракт календарных инструментов: `start`/`end`» ниже и [ADR-027](../../adr/ADR-027-calendar-read-contract-alignment.md).
-- `path` валидируется как относительный/безопасный (без `..`-traversal) на стороне валидатора backend; фактический доступ — ответственность клиента.
-- `error` (в tool-result) имеет форму `{ "code": string, "message": string }`; при `error` backend передаёт Claude tool_result с `is_error=true`.
-
-### Контракт календарных инструментов: `start`/`end` (нормативно, [ADR-027](../../adr/ADR-027-calendar-read-contract-alignment.md))
-**Единый контракт диапазона для `calendar.read` и `calendar.create_events`** (полная консистентность, [ADR-027](../../adr/ADR-027-calendar-read-contract-alignment.md)):
-
-- **Имена аргументов диапазона — идентичны:** `start` / `end` в обоих инструментах. `calendar.read` использует `start`/`end` (ранее `startDate`/`endDate` — **переименовано**, breaking change); `calendar.create_events` — `events[].start` / `events[].end` (без изменений имён).
-- **Формат значения — идентичен:** ISO8601 **datetime** в **локальном времени без timezone-offset**, секундная точность — например `"2026-06-11T09:00:00"`. **Date-only (`"2026-06-11"`) больше не является целевым контрактом** для `calendar.read` (backward-compat date-only не поддерживается, [ADR-027 §Decision 2](../../adr/ADR-027-calendar-read-contract-alignment.md)). Naive local — это сложившийся де-факто формат `create_events`; read выровнен под него. Tz-aware — возможное будущее усиление обоих ([Q-027-1](../../99-open-questions.md)).
-- **Семантика диапазона — end-exclusive:** интервал `[start, end)` — `start` включительно, `end` исключительно. «Весь день D» = `start="D T00:00:00"`, `end="D+1 T00:00:00"` (полночь следующего дня), а **не** `end="D T23:59:59"` ([ADR-027 §Decision 5](../../adr/ADR-027-calendar-read-contract-alignment.md)). Это даёт достижимость диапазона по времени внутри дня (например 09:00–18:00) и однозначность смежных дней.
-- **Валидация формата — НЕ серверная:** `start`/`end` — простой `str` в Pydantic-схеме (без datetime-валидации), **симметрично для read и create** ([ADR-027 §Decision 3](../../adr/ADR-027-calendar-read-contract-alignment.md)). Формат доводится до модели через `TOOL_DESCRIPTIONS` (см. ниже), фактический парсинг datetime — на стороне iOS (EventKit), как и подобает client-side tool ([ADR-011](../../adr/ADR-011-server-side-tools.md)).
-- **Описание для модели (`TOOL_DESCRIPTIONS`) — самодостаточно по формату.** Описания `calendar.read` и `calendar.create_events` обязаны явно указывать ISO8601-datetime-формат `start`/`end` (local, no offset, пример `"2026-06-11T09:00:00"`) и end-exclusive-конвенцию «весь день», чтобы модель генерировала datetime, а не date-only. **Корень устранённого бага:** ранее формат жил только в docs и не доходил до модели — модель генерировала date-only ([ADR-027 §Context](../../adr/ADR-027-calendar-read-contract-alignment.md)).
-- **Breaking change iOS-контракта `calendar.read`** ([ADR-027 §Consequences](../../adr/ADR-027-calendar-read-contract-alignment.md)): iOS-клиент обязан читать args `start`/`end` (не `startDate`/`endDate`) и трактовать значения как datetime. Требуется скоординированный релиз iOS. Каталог `/v1/tools` остаётся 14 инструментов — меняется только `inputSchema` записи `calendar.read` (генерируется из `_ARGS_BY_TOOL`). BUG-3 name-map (имена инструментов) не затрагивается — меняются имена **аргументов**, не имя tool.
-- **Исторические сессии:** старые `chat_steps`/`tool_calls` хранят прежние `startDate`/`endDate`-вызовы как есть; нормализация истории ([ADR-024](../../adr/ADR-024-history-payload-domain-normalization.md)) не переписывает `tool_use.input`. Миграция не требуется ([Q-027-2](../../99-open-questions.md)).
+- Даты — ISO8601 (RFC3339), UTC или с offset.
+- `path` (у `site.*`) валидируется как относительный/безопасный (без `..`-traversal).
+- `error` (в tool-result) имеет форму `{ "code": string, "message": string }`; при `error` backend передаёт провайдеру tool_result с `is_error=true`.
+- Схемы args/result оставшихся server-side инструментов — `time.now` (§ выше), `site.*` ([website-builder/02-api-contracts.md](../website-builder/02-api-contracts.md)), `quiz.generate` ([ADR-062](../../adr/ADR-062-study-learn-quiz-pool.md)), `image.generate` ([ADR-058](../../adr/ADR-058-image-generation.md)).
 
 ### blockReason enum (повтор для удобства)
 `trial_used | subscription_required | subscription_expired | credits_empty | byok_disabled | byok_invalid | rate_limited | policy_denied | max_tokens | image_credits_empty` (источник — [ADR-004](../../adr/ADR-004-blocked-http-200.md); `max_tokens` добавлен [ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md) — обрезка ответа по лимиту output-токенов, в отличие от прочих policy-причин срабатывает **после** начала генерации: `usage`/`messageStepId`/`stepId` присутствуют, кредит не списывается; `image_credits_empty` добавлен [ADR-058](../../adr/ADR-058-image-generation.md) — нехватка кредитов на отдельный дебет генерации изображения, байты не сохранены/rollback; **срабатывает в ЛЮБОМ режиме, включая `byok` и trial** — изображение оплачивается кредитами независимо от `mode`, т.к. генерируется на серверном ключе, [ADR-058 §4](../../adr/ADR-058-image-generation.md)).
@@ -325,7 +289,7 @@ Backend только инициирует tool-call; исполняет клие
 ---
 
 ## GET /v1/tools — каталог инструментов ([ADR-019](../../adr/ADR-019-tools-catalog-endpoint.md))
-Машиночитаемый каталог всех поддерживаемых backend tools — **16** (8 client-side `files.*`/`calendar.*`/`reminders.*` + 5 `site.*` + `time.now` [ADR-026](../../adr/ADR-026-global-server-side-tools-and-time-now.md) + `quiz.generate` [ADR-057](../../adr/ADR-057-study-learn-quiz-contract.md) + `image.generate` [ADR-058](../../adr/ADR-058-image-generation.md)). Источник — `src/app/chat/tools.py` (single source of truth: `_ARGS_BY_TOOL`, `MUTATING_TOOLS`, `SERVER_SIDE_TOOLS`, `GLOBAL_SERVER_SIDE_TOOLS`, `anthropic_tool_definitions()`). Эндпоинт **не** параметризуется ни `assistantMode`, ни наличием проекта — возвращает полный технический реестр backend (включая `site.*` и `time.now`). **Видимость инструмента в каталоге ≠ его доступность в текущем ходе:** каталог перечисляет технические возможности, но runtime-предложение модели фильтруется — `site.*` гейтятся наличием `project_id` ([ADR-022](../../adr/ADR-022-optional-project-and-tool-gating.md)), `quiz.generate` — dialog-gate (только `study_learn`, [ADR-057 §4](../../adr/ADR-057-study-learn-quiz-contract.md)), `image.generate` — **key-gate** (предлагается, если задан `OPENAI_API_KEY`; НЕ по `LLM_PROVIDER` — генератор изображений независим от чат-провайдера, [ADR-058 §3](../../adr/ADR-058-image-generation.md)); фильтрация по `assistantMode` — [Q-012-1](../../99-open-questions.md). Server-side инструменты клиент **не вызывает** — они не отдаются в `toolCalls[]` и исполняются на бэкенде, поэтому их видимость в каталоге безопасна. `time.now` предлагается всегда и в каталоге всегда присутствует.
+Машиночитаемый каталог всех поддерживаемых backend tools — **8** (все server-side; client-side `files.*`/`calendar.*`/`reminders.*` удалены, [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md)): 5 `site.*` + `time.now` [ADR-026](../../adr/ADR-026-global-server-side-tools-and-time-now.md) + `quiz.generate` [ADR-057](../../adr/ADR-057-study-learn-quiz-contract.md) + `image.generate` [ADR-058](../../adr/ADR-058-image-generation.md). Источник — `src/app/chat/tools.py` (single source of truth: `_ARGS_BY_TOOL`, `MUTATING_TOOLS`, `SERVER_SIDE_TOOLS`, `GLOBAL_SERVER_SIDE_TOOLS`, `anthropic_tool_definitions()`). Эндпоинт **не** параметризуется ни `assistantMode`, ни наличием проекта — возвращает полный технический реестр backend (включая `site.*` и `time.now`). **Видимость инструмента в каталоге ≠ его доступность в текущем ходе:** каталог перечисляет технические возможности, но runtime-предложение модели фильтруется — `site.*` гейтятся наличием `project_id` ([ADR-022](../../adr/ADR-022-optional-project-and-tool-gating.md)), `quiz.generate` — dialog-gate (только `study_learn`, [ADR-057 §4](../../adr/ADR-057-study-learn-quiz-contract.md)), `image.generate` — **key-gate** (предлагается, если задан `OPENAI_API_KEY`; НЕ по `LLM_PROVIDER` — генератор изображений независим от чат-провайдера, [ADR-058 §3](../../adr/ADR-058-image-generation.md)); фильтрация по `assistantMode` — [Q-012-1](../../99-open-questions.md). Server-side инструменты клиент **не вызывает** — они не отдаются в `toolCalls[]` и исполняются на бэкенде, поэтому их видимость в каталоге безопасна. `time.now` предлагается всегда и в каталоге всегда присутствует.
 
 ### Auth
 - **JWT-protected** (как все `/v1/*`, кроме `/v1/preview/*`): `Authorization: Bearer <JWT>` обязателен. Каталог не секретен, но единообразие gateway-auth и снижение анонимного API-surface — обоснование в [ADR-019](../../adr/ADR-019-tools-catalog-endpoint.md). Клиент к этому моменту уже имеет JWT (получен через `/v1/auth/register`, [ADR-018](../../adr/ADR-018-embedded-auth-issuer.md)).
@@ -336,11 +300,11 @@ Backend только инициирует tool-call; исполняет клие
 {
   "tools": [
     {
-      "name": "files.read",
-      "description": "Read a file from the user's device.",
+      "name": "time.now",
+      "description": "Get the current date and time...",
       "mutating": false,
-      "execution": "client",
-      "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+      "execution": "server",
+      "inputSchema": { "type": "object", "properties": { "tz": { "type": ["string", "null"] } } }
     },
     {
       "name": "site.write_file",
@@ -359,17 +323,11 @@ Backend только инициирует tool-call; исполняет клие
 - `inputSchema` — JSON Schema args (`_ARGS_BY_TOOL[name].model_json_schema()`).
 - Порядок — детерминированный (по `_ARGS_BY_TOOL`).
 
-### Полный список (16)
+### Полный список (8, [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md))
+> Client-side `files.*`/`calendar.*`/`reminders.*` (ранее 8 записей) **удалены** ([ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md)) — каталог сократился 16 → 8, все оставшиеся server-side. (Ранее нормативные docs расходились в счётчике 16 vs 14 — теперь выровнено на фактические 8.)
+
 | name | execution | mutating |
 |---|---|---|
-| files.read | client | нет |
-| files.write | client | **да** |
-| files.list | client | нет |
-| files.mkdir | client | **да** |
-| calendar.read | client | нет |
-| calendar.create_events | client | **да** |
-| reminders.read | client | нет |
-| reminders.create | client | **да** |
 | site.write_file | **server** | **да** |
 | site.preview | **server** | нет |
 | site.list | **server** | нет |

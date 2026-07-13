@@ -31,6 +31,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import app.chat.llm_client as llm_mod
 from app.config import get_settings
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
 
 
 class FakeOpenAIClient:
@@ -345,7 +352,7 @@ async def test_credits_stale_model_tool_result_continuation_falls_back(
 
     # First turn (resume of the claude-pinned session): a client-side tool call, then continuation.
     openai_instance.responses = [
-        openai_instance.tool_result("files.read", {"path": "a.txt"}),
+        openai_instance.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         openai_instance.text_result("continued"),
     ]
     r1 = await client.post(

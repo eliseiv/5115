@@ -61,9 +61,11 @@ _RUN_RESPONSE_EXAMPLES = {
         "summary": "Запрос на вызов инструментов",
         "description": (
             "Ассистент просит клиента выполнить инструменты на устройстве. `toolCalls[]` содержит "
-            "ВСЕ вызовы хода (здесь — два `files.write` параллельно). Клиент исполняет каждый и "
-            "возвращает результаты батчем через `POST /v1/chat/tool-result`. Поле `toolCall` = "
-            "`toolCalls[0]` (deprecated, читайте `toolCalls[]`)."
+            "ВСЕ вызовы хода (здесь — два параллельных вызова). Имя `example.client_tool` — "
+            "иллюстративный плейсхолдер формы поля: реальных client-side инструментов в поставке "
+            "сейчас нет. Клиент исполняет каждый и возвращает результаты батчем через "
+            "`POST /v1/chat/tool-result`. Поле `toolCall` = `toolCalls[0]` (deprecated, читайте "
+            "`toolCalls[]`)."
         ),
         "value": {
             "status": "tool_call",
@@ -73,18 +75,18 @@ _RUN_RESPONSE_EXAMPLES = {
             "toolCalls": [
                 {
                     "id": _TOOL_CALL_ID,
-                    "name": "files.write",
+                    "name": "example.client_tool",
                     "args": {"path": "index.html", "content": "<!doctype html>…"},
                 },
                 {
                     "id": _TOOL_CALL_ID_2,
-                    "name": "files.write",
+                    "name": "example.client_tool",
                     "args": {"path": "style.css", "content": "body{…}"},
                 },
             ],
             "toolCall": {
                 "id": _TOOL_CALL_ID,
-                "name": "files.write",
+                "name": "example.client_tool",
                 "args": {"path": "index.html", "content": "<!doctype html>…"},
             },
             "usage": {"inputTokens": 980, "outputTokens": 220},
@@ -200,13 +202,13 @@ _TOOL_RESULT_RESPONSE_EXAMPLES = {
             "toolCalls": [
                 {
                     "id": _TOOL_CALL_ID_2,
-                    "name": "files.write",
+                    "name": "example.client_tool",
                     "args": {"path": "style.css", "content": "body{…}"},
                 }
             ],
             "toolCall": {
                 "id": _TOOL_CALL_ID_2,
-                "name": "files.write",
+                "name": "example.client_tool",
                 "args": {"path": "style.css", "content": "body{…}"},
             },
         },

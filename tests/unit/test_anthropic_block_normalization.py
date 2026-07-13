@@ -38,7 +38,7 @@ def test_tool_use_drops_any_future_non_wire_field_via_allowlist() -> None:
     raw = {
         "type": "tool_use",
         "id": "toolu_x",
-        "name": "files_read",
+        "name": "example_client_tool",
         "input": {"path": "a"},
         "caller": {"type": "direct"},
         "some_future_sdk_field": {"nested": 1},
@@ -99,9 +99,9 @@ def test_block_missing_type_does_not_raise() -> None:
 
 def test_allowlist_keeps_only_present_fields_no_kerror() -> None:
     # A wire field absent in the block must not be invented (comprehension is membership-gated).
-    raw = {"type": "tool_use", "id": "toolu_y", "name": "files_read"}  # no "input"
+    raw = {"type": "tool_use", "id": "toolu_y", "name": "example_client_tool"}  # no "input"
     out = _normalize_block(raw)
-    assert out == {"type": "tool_use", "id": "toolu_y", "name": "files_read"}
+    assert out == {"type": "tool_use", "id": "toolu_y", "name": "example_client_tool"}
     assert "input" not in out
 
 

@@ -2,9 +2,10 @@
 
 JWT-protected like all /v1/* reads. Uses the shared hermetic `client` (real PG container, faked
 external clients, rate limits forced open). Verifies the auth gate (401 without token) and the
-response contract (16 tools — ADR-026 added time.now, ADR-057 added quiz.generate, ADR-058 added
-image.generate; dotted domain names; mutating/execution flags; inputSchema present). The catalog
-lists quiz.generate and image.generate unconditionally; their dialog / key gates constrain only the
+response contract (8 tools — ADR-063 removed the 8 client-side files.*/calendar.*/reminders.*
+tools, leaving 5 server-side site.* + time.now/quiz.generate/image.generate, all server-side;
+dotted domain names; mutating/execution flags; inputSchema present). The catalog lists
+quiz.generate and image.generate unconditionally; their dialog / key gates constrain only the
 LLM offer-set, not this endpoint.
 """
 
@@ -19,14 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tests.conftest import auth_headers, seed_user
 
 _EXPECTED_NAMES = {
-    "files.read",
-    "files.write",
-    "files.list",
-    "files.mkdir",
-    "calendar.read",
-    "calendar.create_events",
-    "reminders.read",
-    "reminders.create",
     "site.write_file",
     "site.preview",
     "site.list",
@@ -37,10 +30,6 @@ _EXPECTED_NAMES = {
     "image.generate",
 }
 _MUTATING = {
-    "files.write",
-    "files.mkdir",
-    "calendar.create_events",
-    "reminders.create",
     "site.write_file",
     "site.delete",
     # ADR-058 §1/§4: image.generate writes bytes + is tariffed → mutating.
@@ -69,8 +58,10 @@ async def test_tools_returns_full_catalog_with_token(
     r = await client.get("/v1/tools", headers=auth_headers(uid))
     assert r.status_code == 200, r.text
     tools = r.json()["tools"]
-    assert len(tools) == 16
+    assert len(tools) == 8
     assert {t["name"] for t in tools} == _EXPECTED_NAMES
+    # ADR-063: no removed client-side tool is advertised anymore.
+    assert not any(t["name"].startswith(("files.", "calendar.", "reminders.")) for t in tools)
     # ADR-057: quiz.generate is advertised as a server-side, non-mutating tool.
     quiz = next(t for t in tools if t["name"] == "quiz.generate")
     assert quiz["execution"] == "server"
@@ -116,4 +107,4 @@ async def test_tools_user_mismatch_in_token_still_serves_own_catalog(
     # token for an unprovisioned subject still gets a 200 (lazy provisioning, ADR-007).
     r = await client.get("/v1/tools", headers=auth_headers(uuid.uuid4()))
     assert r.status_code == 200
-    assert len(r.json()["tools"]) == 16
+    assert len(r.json()["tools"]) == 8

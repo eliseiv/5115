@@ -27,6 +27,13 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
 
 
 def _history_step_by_id(history: dict, step_id: str) -> dict | None:
@@ -56,7 +63,9 @@ async def test_run_tool_call_ids_nonempty_match_history_and_differ_from_toolcall
         uid = await seed_user(s, subscription="active", balance=5)
     # Realistic toolu_ provider id (BUG-4 invariant): the domain toolCall.id is a separate UUID.
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_01RunToolCall"),
+        fake_anthropic.tool_result(
+            FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_01RunToolCall"
+        ),
     ]
 
     r = await client.post(
@@ -139,7 +148,7 @@ async def test_tool_result_ids_match_history_stable_messagestep_and_idempotent_r
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_01TurnAbc"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_01TurnAbc"),
         fake_anthropic.text_result("final answer"),
     ]
 

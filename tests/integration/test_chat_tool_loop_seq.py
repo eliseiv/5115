@@ -23,6 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.chat.anthropic_client import AnthropicResult, AnthropicUsage
 from app.chat.repository import ChatRepository
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
 
 
 def _usage() -> AnthropicUsage:
@@ -183,7 +190,7 @@ async def test_tool_result_replay_idempotent_no_double_billing(
         uid = await seed_user(s, subscription="active", balance=5)
     # run -> client-side tool_call ; tool-result -> assistant_message (final, billed once).
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake_anthropic.text_result("the answer"),
     ]
     r1 = await client.post(

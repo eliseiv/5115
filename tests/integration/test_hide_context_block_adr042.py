@@ -31,6 +31,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import (
+    FAKE_CLIENT_TOOL,
+    FAKE_CLIENT_TOOL_WIRE,
+    register_fake_client_tool,
+)
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
+
 
 _BLOCK_PREFIX = "[Conversation settings for this message:"
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -165,11 +177,16 @@ async def test_history_assistant_step_untouched_and_tool_normalization_works(
         stop_reason="tool_use",
         content_blocks=[
             {"type": "text", "text": "Let me read it."},
-            {"type": "tool_use", "id": provider_id, "name": "files_read", "input": {"path": "a"}},
+            {
+                "type": "tool_use",
+                "id": provider_id,
+                "name": FAKE_CLIENT_TOOL_WIRE,
+                "input": {"path": "a"},
+            },
         ],
         usage=usage,
         text="Let me read it.",
-        tool_uses=[{"id": provider_id, "name": "files.read", "input": {"path": "a"}}],
+        tool_uses=[{"id": provider_id, "name": FAKE_CLIENT_TOOL, "input": {"path": "a"}}],
     )
     fake_anthropic.responses = [tool_turn, fake_anthropic.text_result("done")]
 
@@ -217,7 +234,7 @@ async def test_history_assistant_step_untouched_and_tool_normalization_works(
         for b in st["payload"].get("content", [])
         if isinstance(b, dict) and b.get("type") == "tool_use"
     ]
-    assert "files.read" in tool_use_names
+    assert FAKE_CLIENT_TOOL in tool_use_names
 
     # assistant text block left verbatim.
     assistant_texts = [

@@ -268,7 +268,7 @@ async def test_get_history_omits_provider_tool_use_id(
             payload={
                 "toolCallId": str(uuid.uuid4()),
                 "providerToolUseId": "toolu_SECRET123",
-                "toolName": "files.read",
+                "toolName": "example.client_tool",
                 "result": {"ok": True},
             },
         )
@@ -309,7 +309,7 @@ async def test_steps_view_uses_domain_tool_names_no_raw_id(
             s,
             session_id=sid,
             message_step_id=msid,
-            tool_name="files.read",
+            tool_name="example.client_tool",
             provider_tool_use_id=raw_id,
         )
         await s.commit()
@@ -319,7 +319,7 @@ async def test_steps_view_uses_domain_tool_names_no_raw_id(
     body = r.json()
     assert body["messageStepId"] == str(msid)
     tool_names = [st["toolName"] for st in body["steps"] if st["kind"] == "tool_call"]
-    assert "files.read" in tool_names  # domain dotted name resolved
+    assert "example.client_tool" in tool_names  # domain dotted name resolved
     assert raw_id not in r.text  # raw provider id never leaks
 
 
@@ -419,7 +419,7 @@ async def test_delete_cascades_steps_and_tool_calls(
             s,
             session_id=sid,
             message_step_id=msid,
-            tool_name="files.read",
+            tool_name="example.client_tool",
             provider_tool_use_id="toolu_x",
         )
         await s.commit()

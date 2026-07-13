@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
 
 # A site.write_file whose RAW result would carry a path/URL/preview signed-token. The security
 # assertion below proves none of that reaches serverTools[].summary.
@@ -259,14 +260,16 @@ async def test_server_tools_present_when_turn_ends_in_client_tool_call(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    register_fake_client_tool(monkeypatch)  # ADR-063: test-only client-side example tool
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
-    # Round 1: time.now (server-side) → loop continues. Round 2: files.read (client-side) →
+    # Round 1: time.now (server-side) → loop continues. Round 2: a client-side tool →
     # hand-off to iOS with status=tool_call.
     fake_anthropic.responses = [
         fake_anthropic.tool_result("time.now", {}, tool_id="toolu_h1"),
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_h2"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_h2"),
     ]
     r = await client.post(
         "/v1/chat/run",
@@ -281,9 +284,9 @@ async def test_server_tools_present_when_turn_ends_in_client_tool_call(
         body["serverTools"][0], toolName="time.now", status="completed", summary="ok"
     )
     # client-side stays in toolCalls[] (NOT in serverTools).
-    assert [tc["name"] for tc in body["toolCalls"]] == ["files.read"]
+    assert [tc["name"] for tc in body["toolCalls"]] == [FAKE_CLIENT_TOOL]
     server_names = {e["toolName"] for e in body["serverTools"]}
-    assert "files.read" not in server_names
+    assert FAKE_CLIENT_TOOL not in server_names
 
 
 # ============================================================================================
@@ -397,13 +400,15 @@ async def test_tool_result_continuation_surfaces_its_server_tools(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    register_fake_client_tool(monkeypatch)  # ADR-063: test-only client-side example tool
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
-    # run → client tool_call (files.read). After the client result, the continuation runs a
+    # run → client tool_call. After the client result, the continuation runs a
     # time.now server-side round, then finalizes.
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_c0"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_c0"),
         fake_anthropic.tool_result("time.now", {}, tool_id="toolu_c1"),
         fake_anthropic.text_result("final after continuation"),
     ]

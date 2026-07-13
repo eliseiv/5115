@@ -3,9 +3,10 @@
 Pure, no I/O. Two concerns:
 - ChatRunRequest.projectId validator: optional (None ok), but a present-yet-blank value is 422.
 - anthropic_tool_definitions(include_server_side=...) drops SERVER_SIDE_TOOLS (site.*) when False
-  while keeping every client-side tool (files.*/calendar.*/reminders.*), and the full non-quiz set
-  (incl. site.*) when True. The dialog-mode-gated quiz.generate (ADR-057 §4) is offered ONLY under
-  dialog_mode="study_learn" and composes with the axis-A project gate by logical AND.
+  while keeping every client-side tool (ADR-063: none shipped — exercised via a test-only fake
+  client tool), and the full non-quiz set (incl. site.*) when True. The dialog-mode-gated
+  quiz.generate (ADR-057 §4) is offered ONLY under dialog_mode="study_learn" and composes with the
+  axis-A project gate by logical AND.
 
 Axis B (assistant_mode) is intentionally NOT exercised: per the task and tools.py docstring it is
 Q-012-1 Open and NOT implemented — the only code-level gate today is project_id (axis A).
@@ -77,7 +78,8 @@ def test_definitions_with_project_include_all_non_quiz_tools() -> None:
     # tools here.
     names = _domain_names(include_server_side=True)
     assert names == _NON_QUIZ_TOOLS
-    assert len(names) == 15  # ADR-026 time.now + ADR-058 image.generate + ADR-027/011; quiz gated
+    # ADR-063: 5 site.* + time.now + image.generate = 7 (quiz.generate dialog-gated out).
+    assert len(names) == 7
     # site.* present; quiz.generate absent until study_learn.
     assert names >= SERVER_SIDE_TOOLS
     assert TOOL_QUIZ_GENERATE not in names
@@ -100,8 +102,8 @@ def test_definitions_without_project_exclude_site_tools() -> None:
     # stays — global, not gated by project; ADR-058: image.generate stays — global, key-gate
     # satisfied; ADR-057: quiz.generate needs study_learn).
     assert names == _NON_QUIZ_TOOLS - set(SERVER_SIDE_TOOLS)
-    # 8 client-side + time.now + image.generate (quiz.generate gated out; site.* dropped).
-    assert len(names) == 10
+    # ADR-063: time.now + image.generate (quiz.generate gated out; site.* dropped; no client-side).
+    assert len(names) == 2
     assert "time.now" in names
     assert "image.generate" in names
     assert TOOL_QUIZ_GENERATE not in names
@@ -113,20 +115,23 @@ def test_definitions_without_project_but_study_learn_add_quiz_keep_no_site() -> 
     names = _domain_names(include_server_side=False, dialog_mode="study_learn")
     assert names.isdisjoint(SERVER_SIDE_TOOLS)
     assert TOOL_QUIZ_GENERATE in names
-    # 8 client-side + time.now + quiz.generate + image.generate (ADR-058, key-gate satisfied).
-    assert len(names) == 11
+    # ADR-063: time.now + quiz.generate + image.generate (ADR-058, key-gate satisfied).
+    assert len(names) == 3
     assert "image.generate" in names
 
 
-def test_definitions_without_project_keep_all_client_side_tools() -> None:
+def test_definitions_without_project_keep_client_side_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR-022 §2: client-side tools are NOT touched by the project (axis-A) gate. ADR-063 removed
+    # all shipped client-side tools, so a test-only fake client tool stands in as the example: it
+    # must still be offered when include_server_side=False (site.* dropped, client-side kept).
+    from tests.fake_client_tool import register_fake_client_tool
+
+    fake = register_fake_client_tool(monkeypatch)
     names = _domain_names(include_server_side=False)
-    # ADR-022 §2: client-side tools are NOT touched by the project gate.
-    for client_tool in ("files.read", "files.write", "files.list", "files.mkdir"):
-        assert client_tool in names
-    for client_tool in ("calendar.read", "calendar.create_events"):
-        assert client_tool in names
-    for client_tool in ("reminders.read", "reminders.create"):
-        assert client_tool in names
+    assert fake in names
+    assert names.isdisjoint(SERVER_SIDE_TOOLS)
 
 
 def test_default_include_server_side_is_true() -> None:

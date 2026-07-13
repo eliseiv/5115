@@ -1,9 +1,10 @@
 """Unit tests for the GET /v1/tools catalog payload (ADR-019, chat-orchestrator/02).
 
 ``tool_catalog()`` is the single source of truth backing the endpoint; these tests assert the
-catalog contract (16 tools — ADR-026 added the global server-side ``time.now``, ADR-057 added
-``quiz.generate``, ADR-058 added ``image.generate`` — dotted domain names, correct
-mutating/execution flags, inputSchema) without an app/DB round-trip. The HTTP wiring
+catalog contract (8 tools — ADR-063 removed the 8 client-side ``files.*`` / ``calendar.*`` /
+``reminders.*`` tools, leaving 5 server-side ``site.*`` + 3 global server-side tools:
+``time.now`` / ``quiz.generate`` / ``image.generate`` — all ``execution=server`` — dotted domain
+names, correct mutating/execution flags, inputSchema) without an app/DB round-trip. The HTTP wiring
 (JWT-protection, response shape) is exercised in tests/integration/test_tools_endpoint.py.
 
 ADR-058 §3 note: the ``image.generate`` KEY-GATE (offered to the LLM only when OPENAI_API_KEY is
@@ -22,18 +23,10 @@ from app.chat.tools import (
     tool_catalog,
 )
 
-# Per ADR-011 / ADR-026 / ADR-057 / ADR-058 / chat-orchestrator/02: 8 client-side iOS tools + 5
-# server-side site.* tools + 3 global server-side tools (time.now, quiz.generate, image.generate)
-# = 16.
+# Per ADR-063 / ADR-026 / ADR-057 / ADR-058 / chat-orchestrator/02: after removing the 8 client-side
+# tools, 5 server-side site.* tools + 3 global server-side tools (time.now, quiz.generate,
+# image.generate) = 8 — ALL server-side.
 _EXPECTED_NAMES = {
-    "files.read",
-    "files.write",
-    "files.list",
-    "files.mkdir",
-    "calendar.read",
-    "calendar.create_events",
-    "reminders.read",
-    "reminders.create",
     "site.write_file",
     "site.preview",
     "site.list",
@@ -47,8 +40,16 @@ _EXPECTED_NAMES = {
 
 def test_catalog_lists_every_registered_tool() -> None:
     catalog = tool_catalog()
-    assert len(catalog) == 16
+    assert len(catalog) == 8
     assert {t["name"] for t in catalog} == _EXPECTED_NAMES == set(ALL_TOOL_NAMES)
+
+
+def test_catalog_has_no_removed_client_side_tools() -> None:
+    # ADR-063: files.* / calendar.* / reminders.* are gone from the shipped catalog.
+    names = {t["name"] for t in tool_catalog()}
+    assert not any(n.startswith(("files.", "calendar.", "reminders.")) for n in names)
+    # Every remaining catalog entry is server-side (no client-side tool remains registered).
+    assert all(t["execution"] == "server" for t in tool_catalog())
 
 
 def test_quiz_generate_is_global_server_side_in_catalog() -> None:
@@ -63,7 +64,7 @@ def test_quiz_generate_is_global_server_side_in_catalog() -> None:
 
 
 def test_every_tool_name_is_dotted_domain_not_underscore() -> None:
-    # The iOS-facing contract uses dotted domain names (files.read, site.write_file); the
+    # The iOS-facing contract uses dotted domain names (site.write_file, time.now); the
     # underscore wire names are an Anthropic-transport detail and must NOT leak here (BUG-3).
     for tool in tool_catalog():
         assert "." in tool["name"], tool["name"]
@@ -72,10 +73,6 @@ def test_every_tool_name_is_dotted_domain_not_underscore() -> None:
 
 def test_mutating_flag_matches_mutating_tools() -> None:
     expected_mutating = {
-        "files.write",
-        "files.mkdir",
-        "calendar.create_events",
-        "reminders.create",
         "site.write_file",
         "site.delete",
         # ADR-058 §1/§4: image.generate WRITES bytes (generated_images) and is TARIFFED → mutating,

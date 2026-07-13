@@ -24,9 +24,17 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
 
 _WRITE_A = {"path": "index.html", "content": "<h1>a</h1>", "encoding": "utf8", "overwrite": True}
 _WRITE_B = {"path": "style.css", "content": "body{}", "encoding": "utf8", "overwrite": True}
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: no shipped client-side tool remains; register a test-only client-side example so the
+    # dormant client-side protocol (turn barrier / parallel tool_use, ADR-025) is exercised.
+    register_fake_client_tool(monkeypatch)
 
 
 def _history_step_by_id(history: dict, step_id: str) -> dict | None:
@@ -76,7 +84,7 @@ async def test_parallel_tool_use_all_calls_surfaced_in_tool_calls(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A), ("files.write", _WRITE_B)],
+            [(FAKE_CLIENT_TOOL, _WRITE_A), (FAKE_CLIENT_TOOL, _WRITE_B)],
             tool_ids=["toolu_01ParA", "toolu_01ParB"],
         ),
     ]
@@ -93,7 +101,7 @@ async def test_parallel_tool_use_all_calls_surfaced_in_tool_calls(
     assert len(body["toolCalls"]) == 2, body["toolCalls"]
     names = [tc["name"] for tc in body["toolCalls"]]
     args = [tc["args"] for tc in body["toolCalls"]]
-    assert names == ["files.write", "files.write"]
+    assert names == [FAKE_CLIENT_TOOL, FAKE_CLIENT_TOOL]
     assert args == [_WRITE_A, _WRITE_B]
     # Two distinct domain ids (not provider ids).
     ids = [tc["id"] for tc in body["toolCalls"]]
@@ -124,7 +132,7 @@ async def test_turn_barrier_partial_then_complete_then_continuation(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A), ("files.write", _WRITE_B)],
+            [(FAKE_CLIENT_TOOL, _WRITE_A), (FAKE_CLIENT_TOOL, _WRITE_B)],
             tool_ids=["toolu_01BarA", "toolu_01BarB"],
         ),
         fake_anthropic.text_result("done"),
@@ -195,7 +203,7 @@ async def test_turn_barrier_batch_closes_at_once(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A), ("files.write", _WRITE_B)],
+            [(FAKE_CLIENT_TOOL, _WRITE_A), (FAKE_CLIENT_TOOL, _WRITE_B)],
             tool_ids=["toolu_01BatchA", "toolu_01BatchB"],
         ),
         fake_anthropic.text_result("done"),
@@ -251,7 +259,7 @@ async def test_mixed_turn_server_side_executed_client_side_surfaced(
     }
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("site.write_file", site_args), ("files.write", _WRITE_A)],
+            [("site.write_file", site_args), (FAKE_CLIENT_TOOL, _WRITE_A)],
             tool_ids=["toolu_01MixSite", "toolu_01MixClient"],
         ),
         fake_anthropic.text_result("ready"),
@@ -267,7 +275,7 @@ async def test_mixed_turn_server_side_executed_client_side_surfaced(
     assert run["status"] == "tool_call", run
     sid = run["sessionId"]
     # Only the client-side files.write is surfaced; site.write_file is not.
-    assert [tc["name"] for tc in run["toolCalls"]] == ["files.write"]
+    assert [tc["name"] for tc in run["toolCalls"]] == [FAKE_CLIENT_TOOL]
     client_id = run["toolCalls"][0]["id"]
 
     # site.write_file executed on the backend → site_files row persisted.
@@ -305,7 +313,7 @@ async def test_idempotent_replay_no_duplicate_continuation_or_debit(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A), ("files.write", _WRITE_B)],
+            [(FAKE_CLIENT_TOOL, _WRITE_A), (FAKE_CLIENT_TOOL, _WRITE_B)],
             tool_ids=["toolu_01IdemA", "toolu_01IdemB"],
         ),
         fake_anthropic.text_result("done"),
@@ -390,7 +398,7 @@ async def test_duplicate_tool_call_id_in_batch_is_422(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A), ("files.write", _WRITE_B)],
+            [(FAKE_CLIENT_TOOL, _WRITE_A), (FAKE_CLIENT_TOOL, _WRITE_B)],
             tool_ids=["toolu_01DupA", "toolu_01DupB"],
         ),
     ]
@@ -428,7 +436,7 @@ async def test_cross_session_tool_call_id_is_404(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A)], tool_ids=["toolu_01XSess"]
+            [(FAKE_CLIENT_TOOL, _WRITE_A)], tool_ids=["toolu_01XSess"]
         ),
     ]
     run = (
@@ -467,8 +475,12 @@ async def test_cross_turn_tool_call_id_in_batch_is_422(
         uid = await seed_user(s, subscription="active", balance=5)
     # Turn 1 → a tool_call; do not complete it. Then a SECOND run on the same session → turn 2.
     fake_anthropic.responses = [
-        fake_anthropic.parallel_tool_result([("files.write", _WRITE_A)], tool_ids=["toolu_01T1"]),
-        fake_anthropic.parallel_tool_result([("files.write", _WRITE_B)], tool_ids=["toolu_01T2"]),
+        fake_anthropic.parallel_tool_result(
+            [(FAKE_CLIENT_TOOL, _WRITE_A)], tool_ids=["toolu_01T1"]
+        ),
+        fake_anthropic.parallel_tool_result(
+            [(FAKE_CLIENT_TOOL, _WRITE_B)], tool_ids=["toolu_01T2"]
+        ),
     ]
     run1 = (
         await client.post(
@@ -523,7 +535,7 @@ async def test_single_form_equivalent_to_batch_of_one(
         uid = await seed_user(s, subscription="active", balance=5)
     # Single client tool call this turn → single-form tool-result must drive continuation.
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_01Single"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_01Single"),
         fake_anthropic.text_result("final"),
     ]
     run = (
@@ -565,7 +577,7 @@ async def test_parallel_turn_batch_results_bills_exactly_one_credit(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A), ("files.write", _WRITE_B)],
+            [(FAKE_CLIENT_TOOL, _WRITE_A), (FAKE_CLIENT_TOOL, _WRITE_B)],
             tool_ids=["toolu_01BillA", "toolu_01BillB"],
         ),
         fake_anthropic.text_result("done"),
@@ -623,7 +635,7 @@ async def test_max_tokens_truncation_blocked_no_debit_ids_present(
     fake_anthropic.responses = [
         fake_anthropic.max_tokens_result(
             text="Here is the start of the landing page...",
-            truncated_tool=("files.write", {"path": "index.html"}),  # incomplete: no content
+            truncated_tool=(FAKE_CLIENT_TOOL, {"path": "index.html"}),  # incomplete: no content
             tool_id="toolu_01Trunc",
             output_tokens=16000,
         ),
@@ -738,7 +750,7 @@ async def test_sync_invariant_tool_calls_match_history_and_tools_catalog(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.parallel_tool_result(
-            [("files.write", _WRITE_A), ("files.read", {"path": "b.txt"})],
+            [(FAKE_CLIENT_TOOL, _WRITE_A), (FAKE_CLIENT_TOOL, {"path": "b.txt"})],
             tool_ids=["toolu_01SyncA", "toolu_01SyncB"],
         ),
     ]

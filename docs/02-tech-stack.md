@@ -132,7 +132,7 @@ src/app/
     middleware.py         # CorrelationId, SecurityHeaders, SizeLimit
     rate_limit.py         # Redis rate limiting, redis_ping, close_redis
     routers/              # chat, policy, wallet, subscription, byok, health, admin (/v1/admin/*), preview (/v1/preview/*)
-  chat/                   # orchestrator, anthropic_client, repository, tools (client-side files.*/calendar.*/reminders.* + server-side site.* dispatch)
+  chat/                   # orchestrator, anthropic_client, repository, tools (server-side site.* dispatch + global time.now/quiz.generate/image.generate; client-side инструменты удалены — ADR-063)
   admin/                  # service-обёртка над Wallet.grant/get_wallet_view (ADR-009)
   website/                # projects/site_files service, signed URL (HMAC), site.* tool-хэндлеры (server-side, ADR-010/011)
   policy/                 # engine (pure), loader (state из репозиториев)

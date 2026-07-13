@@ -29,6 +29,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
+
 
 _BLOCK_PREFIX = "[Conversation settings for this message:"
 
@@ -286,7 +294,7 @@ async def test_context_not_reinjected_on_tool_result(
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake_anthropic.text_result("done"),
     ]
     r1 = await client.post(

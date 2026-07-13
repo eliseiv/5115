@@ -177,12 +177,12 @@ def test_openai_quiz_schema_keeps_strict_required_structure() -> None:
 
 # ============================ non-strict tools untouched ============================
 def test_non_strict_tool_keeps_constraints_and_is_not_strict() -> None:
-    # Regression: a plain tool (files.read) is serialized strict=False with its schema UNCHANGED —
+    # Regression: a plain tool (site.read) is serialized strict=False with its schema UNCHANGED —
     # its length constraints (path.minLength) survive because no strict validator runs on it.
     defs = openai_tool_definitions(dialog_mode="study_learn")
-    files_read = next(d for d in defs if d["name"] == "files_read")
-    assert files_read["strict"] is False
-    props = files_read["parameters"]["properties"]
+    site_read = next(d for d in defs if d["name"] == "site_read")
+    assert site_read["strict"] is False
+    props = site_read["parameters"]["properties"]
     assert props["path"]["minLength"] == 1
 
 
@@ -333,13 +333,17 @@ def test_quiz_generate_present_in_study_learn() -> None:
     assert "quiz.generate" in _offered_names("study_learn")
 
 
-def test_quiz_gate_composes_with_temporary_chat() -> None:
+def test_quiz_gate_composes_with_temporary_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     # ADR-056 + ADR-062: quiz.generate is a GLOBAL server-side tool, so include_client_side=False
     # (temporary chat) does NOT drop it; it stays offered under study_learn while client-side tools
-    # are gone.
+    # are dropped. ADR-063 removed all shipped client-side tools, so a test-only fake client tool
+    # stands in as the dropped example.
+    from tests.fake_client_tool import register_fake_client_tool
+
+    fake = register_fake_client_tool(monkeypatch)
     names = _offered_names("study_learn", include_client_side=False)
     assert "quiz.generate" in names
-    assert "files.read" not in names  # client-side dropped for a temporary chat
+    assert fake not in names  # client-side dropped for a temporary chat
 
 
 # ================= QuizGenerateArgs server-side validation (pool) =================

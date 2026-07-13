@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import app.chat.llm_client as llm_mod
 from app.config import get_settings
 from tests.conftest import auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
 
 # Distinctive learning-content tokens — used to prove (TD-035) the quiz text never leaks into the
 # audit payload or the degrade tool_result message.
@@ -336,19 +337,22 @@ async def test_quiz_with_client_tool_zeroes_accompanying_text_on_tool_call(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     openai_instance: FakeOpenAIClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # ADR-062 §3 (overrides ADR-024 for the quiz turn): when a quiz.generate round precedes a
     # client-side tool_use IN THE SAME TURN, the tool_call response carries the quiz AND the model's
     # accompanying text is dropped (assistantMessage=null) — the single _to_response assembly point
-    # covers the tool_call status too, not just assistant_message.
+    # covers the tool_call status too, not just assistant_message. ADR-063: no shipped client-side
+    # tool remains, so a test-only fake client tool stands in for the client-side round.
+    register_fake_client_tool(monkeypatch)
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     openai_instance.responses = [
         # Round 1: server-side quiz.generate (executed in-loop, added to quiz_acc).
         openai_instance.tool_result("quiz.generate", _pool(3)),
-        # Round 2: a client-side files.read WITH accompanying text → tool_call hand-off to iOS.
+        # Round 2: a client-side tool WITH accompanying text → tool_call hand-off to iOS.
         openai_instance.tool_result(
-            "files.read",
+            FAKE_CLIENT_TOOL,
             {"path": "notes.md"},
             text_value="Here is the quiz and also let me read your file.",
         ),
@@ -363,7 +367,7 @@ async def test_quiz_with_client_tool_zeroes_accompanying_text_on_tool_call(
     # …and the accompanying text was zeroed (would otherwise spoil/duplicate — ADR-062 §3).
     assert body["assistantMessage"] is None
     # The client-side tool is still handed off.
-    assert any(tc["name"] == "files.read" for tc in body["toolCalls"])
+    assert any(tc["name"] == FAKE_CLIENT_TOOL for tc in body["toolCalls"])
 
 
 # ============================ pool count bounds (degrade, ADR-062 §7) ============================

@@ -307,7 +307,7 @@ class FakeAnthropicClient:
         """ADR-025: a turn TRUNCATED by the output-token limit (stop_reason="max_tokens").
 
         Mirrors production: content_blocks may carry a partial text block plus an INCOMPLETE
-        tool_use block (e.g. files.write missing ``content``). The orchestrator must NOT execute
+        tool_use block (e.g. site.write_file missing ``content``). The orchestrator must NOT execute
         nor surface these blocks; tool_uses is left empty (no executable tool_use on truncation —
         the orchestrator dispatches purely on stop_reason). ``output_tokens`` ≈ the max_tokens cap.
         """

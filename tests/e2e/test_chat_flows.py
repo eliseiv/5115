@@ -14,6 +14,19 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import (
+    FAKE_CLIENT_MUTATING_TOOL,
+    FAKE_CLIENT_TOOL,
+    register_fake_client_tool,
+)
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: no shipped client-side tool remains; register a plain + a mutating test-only
+    # client-side example so the tool-loop / hand-off / mutation-audit flows are exercised.
+    register_fake_client_tool(monkeypatch)
+    register_fake_client_tool(monkeypatch, mutating=True)
 
 
 async def _count(maker: async_sessionmaker[AsyncSession], sql: str, uid: uuid.UUID) -> int:
@@ -142,8 +155,8 @@ async def test_tool_loop_multi_round_single_debit(
 
     # run → tool_call(round1); tool-result → tool_call(round2); tool-result → assistant_message
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
-        fake_anthropic.tool_result("files.list", {"path": ".", "recursive": False}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": ".", "recursive": False}),
         fake_anthropic.text_result("done"),
     ]
 
@@ -212,7 +225,7 @@ async def test_continuation_replays_raw_provider_tool_use_id(
         uid = await seed_user(s, subscription="active", balance=5)
 
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_abc123"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_abc123"),
         fake_anthropic.text_result("final"),
     ]
 
@@ -276,7 +289,7 @@ async def test_tool_result_idempotent_replay(
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake_anthropic.text_result("final"),
     ]
     r1 = await client.post(
@@ -308,7 +321,7 @@ async def test_tool_result_foreign_session_404(
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
         other = await seed_user(s, subscription="active", balance=5)
-    fake_anthropic.responses = [fake_anthropic.tool_result("files.read", {"path": "a"})]
+    fake_anthropic.responses = [fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a"})]
     r1 = await client.post(
         "/v1/chat/run",
         json={"userId": str(uid), "projectId": "p", "message": "go", "mode": "credits"},
@@ -365,7 +378,7 @@ async def test_mutating_tool_writes_audit(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.tool_result(
-            "files.write",
+            FAKE_CLIENT_MUTATING_TOOL,
             {"path": "a.txt", "content": "x", "encoding": "utf8", "overwrite": True},
         ),
         fake_anthropic.text_result("written"),

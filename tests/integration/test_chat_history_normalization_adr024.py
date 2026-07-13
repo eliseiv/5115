@@ -8,8 +8,9 @@ Normative coverage of:
 
 Real PostgreSQL container; Anthropic faked at the client boundary. CRITICAL fake invariant
 (chat-orchestrator/09-testing): the *stored* assistant payload (chat_steps.payload) must carry the
-raw provider id ``toolu_...`` and the UNDERSCORE wire tool name (``calendar_create_events``),
-exactly as the real AnthropicClient persists it (anthropic_client.py: content_blocks keep the raw
+raw provider id ``toolu_...`` and the UNDERSCORE wire tool name (ADR-063: a test-only fake
+client-side tool, since no shipped client-side tool remains), exactly as the real AnthropicClient
+persists it (anthropic_client.py: content_blocks keep the raw
 name; tool_uses carry the domain dotted name). The shared FakeAnthropicClient.tool_result stores a
 DOT name in content_blocks (already-normalized), which would not exercise normalization — so these
 tests build the AnthropicResult locally to mirror production: content_blocks = underscore name +
@@ -28,10 +29,27 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import (
+    FAKE_CLIENT_MUTATING_TOOL,
+    FAKE_CLIENT_MUTATING_TOOL_WIRE,
+    FAKE_CLIENT_TOOL,
+    FAKE_CLIENT_TOOL_WIRE,
+    register_fake_client_tool,
+)
 
-# Domain (dot) ↔ wire (underscore) pair used throughout. calendar.create_events is the §39 example.
-_DOMAIN_NAME = "calendar.create_events"
-_WIRE_NAME = "calendar_create_events"
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: no shipped client-side tool remains; register two test-only client-side example tools
+    # (a plain + a mutating one) so history domain-normalization (ADR-024) of client tool_use blocks
+    # can be exercised on the wire↔domain name pair.
+    register_fake_client_tool(monkeypatch)
+    register_fake_client_tool(monkeypatch, mutating=True)
+
+
+# Domain (dot) ↔ wire (underscore) pair used throughout — a test-only client-side example tool.
+_DOMAIN_NAME = FAKE_CLIENT_TOOL
+_WIRE_NAME = FAKE_CLIENT_TOOL_WIRE
 
 
 def _anthropic_result(
@@ -192,8 +210,8 @@ async def test_history_client_tool_roundtrip_no_provider_id_domain_tool_call_id(
     provider_id = "toolu_01RoundTrip"
     fake_anthropic.responses = [
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id=provider_id,
             args={"path": "a.txt"},
         ),
@@ -272,7 +290,8 @@ async def test_history_tool_result_block_tool_use_id_normalized_to_domain(
             sql(
                 "INSERT INTO tool_calls "
                 "(id, session_id, message_step_id, tool_name, provider_tool_use_id, args, status) "
-                "VALUES (:id, :sid, :msid, 'files.read', :ptu, CAST('{}' AS JSONB), 'completed')"
+                "VALUES (:id, :sid, :msid, 'example.client_tool', :ptu, "
+                "CAST('{}' AS JSONB), 'completed')"
             ),
             {
                 "id": str(domain_tc_id),
@@ -298,7 +317,7 @@ async def test_history_tool_result_block_tool_use_id_normalized_to_domain(
                             {
                                 "type": "tool_use",
                                 "id": provider_id,
-                                "name": "files_read",
+                                "name": FAKE_CLIENT_TOOL_WIRE,
                                 "input": {"path": "a.txt"},
                             }
                         ]
@@ -374,19 +393,28 @@ async def test_history_parallel_tool_use_each_own_domain_id(
     parallel = AnthropicResult(
         stop_reason="tool_use",
         content_blocks=[
-            {"type": "tool_use", "id": pid_a, "name": "files_read", "input": {"path": "a.txt"}},
+            {
+                "type": "tool_use",
+                "id": pid_a,
+                "name": FAKE_CLIENT_TOOL_WIRE,
+                "input": {"path": "a.txt"},
+            },
             {
                 "type": "tool_use",
                 "id": pid_b,
-                "name": "files_list",
+                "name": FAKE_CLIENT_MUTATING_TOOL_WIRE,
                 "input": {"path": ".", "recursive": False},
             },
         ],
         usage=usage,
         text="",
         tool_uses=[
-            {"id": pid_a, "name": "files.read", "input": {"path": "a.txt"}},
-            {"id": pid_b, "name": "files.list", "input": {"path": ".", "recursive": False}},
+            {"id": pid_a, "name": FAKE_CLIENT_TOOL, "input": {"path": "a.txt"}},
+            {
+                "id": pid_b,
+                "name": FAKE_CLIENT_MUTATING_TOOL,
+                "input": {"path": ".", "recursive": False},
+            },
         ],
     )
     fake_anthropic.responses = [parallel]
@@ -414,7 +442,7 @@ async def test_history_parallel_tool_use_each_own_domain_id(
     assert ids[0] != ids[1]
     assert all(not i.startswith("toolu_") for i in ids)
     # Names normalized to dot.
-    assert {b["name"] for b in all_tu} == {"files.read", "files.list"}
+    assert {b["name"] for b in all_tu} == {FAKE_CLIENT_TOOL, FAKE_CLIENT_MUTATING_TOOL}
 
 
 # ============================================================================================
@@ -494,20 +522,20 @@ async def test_history_builds_map_with_single_query_no_n_plus_1(
     # tool_result blocks across many steps (would trigger N+1 if resolved per-block).
     fake_anthropic.responses = [
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id="toolu_01R1",
             args={"path": "1.txt"},
         ),
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id="toolu_01R2",
             args={"path": "2.txt"},
         ),
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id="toolu_01R3",
             args={"path": "3.txt"},
         ),
@@ -639,15 +667,15 @@ async def test_tool_call_carries_assistant_message_run_and_tool_result(
     # Round 1: [text, tool_use]; round 2 (after tool-result): again [text, tool_use]; round 3 final.
     fake_anthropic.responses = [
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id="toolu_01T1",
             args={"path": "a.txt"},
             text="Let me check the first file.",
         ),
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id="toolu_01T2",
             args={"path": "b.txt"},
             text="Now the second one.",
@@ -699,8 +727,8 @@ async def test_tool_call_without_text_has_null_assistant_message(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id="toolu_01NoText",
             args={"path": "a.txt"},
             text="",  # no text block
@@ -734,8 +762,8 @@ async def test_tool_call_assistant_message_matches_history_step_text(
     text_val = "I will read the configuration file now."
     fake_anthropic.responses = [
         _anthropic_result(
-            wire_name="files_read",
-            domain_name="files.read",
+            wire_name=FAKE_CLIENT_TOOL_WIRE,
+            domain_name=FAKE_CLIENT_TOOL,
             provider_id="toolu_01Match",
             args={"path": "cfg.json"},
             text=text_val,

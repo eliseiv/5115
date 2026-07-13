@@ -1,7 +1,9 @@
 # ADR-027 — Унификация контракта `calendar.read` с `calendar.create_events` (имена `start`/`end` + ISO8601 datetime)
 
-- **Статус:** Accepted
+- **Статус:** **Superseded — [ADR-063](ADR-063-remove-client-side-calendar-reminders-files-tools.md) (2026-07-14)**
 - **Дата:** 2026-06-11
+
+> **⚠️ Superseded ([ADR-063](ADR-063-remove-client-side-calendar-reminders-files-tools.md), 2026-07-14).** Инструмент `calendar.read` (как и `calendar.create_events`, `reminders.*`, `files.*`) **удалён из сервиса** решением владельца — унифицировать контракт больше нечего. `GET /v1/tools` его не перечисляет, модель его не вызывает. Документ ниже сохранён как исторический контракт (действовал 2026-06-11 … 2026-07-14). Связанные open questions [Q-027-1](../99-open-questions.md) закрыты как moot.
 - **Связано:** [ADR-011](ADR-011-server-side-tools.md) (классы tools: client-side), [ADR-019](ADR-019-tools-catalog-endpoint.md) (каталог `/v1/tools`), [ADR-024](ADR-024-history-payload-domain-normalization.md) (нормализация payload истории), [ADR-026](ADR-026-global-server-side-tools-and-time-now.md) (`time.now` — источник текущей даты для модели)
 - **Затрагивает:** `src/app/chat/tools.py` (`CalendarReadArgs`, `TOOL_DESCRIPTIONS`), `docs/modules/chat-orchestrator/02-api-contracts.md`, `docs/API-REFERENCE.md`
 - **Характер изменения:** **breaking change публичного iOS-контракта** инструмента `calendar.read` (требует обновления iOS-клиента).

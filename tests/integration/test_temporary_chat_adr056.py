@@ -39,8 +39,11 @@ from app.chat.tools import (
     to_domain_tool_name,
 )
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import register_fake_client_tool
 
-# Client-side tools = everything that is neither project-scoped site.* nor the global time.now.
+# Client-side tools = everything that is neither project-scoped site.* nor a global server-side
+# tool. ADR-063 removed all shipped client-side tools, so this is empty in the shipped catalog; the
+# tests below register a test-only fake client tool to exercise the client-side gate.
 _CLIENT_SIDE_TOOLS = ALL_TOOL_NAMES - SERVER_SIDE_TOOLS - GLOBAL_SERVER_SIDE_TOOLS
 
 
@@ -244,7 +247,9 @@ async def test_temporary_run_drops_client_side_tools_keeps_time_now(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    fake_client = register_fake_client_tool(monkeypatch)  # ADR-063: test-only client-side example
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [fake_anthropic.text_result("ok")]
@@ -260,8 +265,9 @@ async def test_temporary_run_drops_client_side_tools_keeps_time_now(
         headers=auth_headers(uid),
     )
     offered = _offered_domain_tools(fake_anthropic.calls[0])
-    # No client-side tools offered (files.*/calendar.*/reminders.*).
-    assert offered.isdisjoint(_CLIENT_SIDE_TOOLS)
+    # ADR-056/ADR-063: the client-side tool (here the test-only fake) is dropped for a temporary
+    # chat — it needs DB continuation via /chat/tool-result, unavailable without persistence.
+    assert fake_client not in offered
     assert not any(n.startswith(("files.", "calendar.", "reminders.")) for n in offered)
     # The global server-side time.now stays offered (executed in-request).
     assert "time.now" in offered
@@ -275,13 +281,15 @@ async def test_temporary_client_side_tool_use_is_502_upstream_error(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    fake_client = register_fake_client_tool(monkeypatch)  # ADR-063: test-only client-side example
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
-    # Anomalous: the model returns a client-side files.read tool_use although client-side tools were
-    # NOT offered in a temporary chat. It cannot be handed off (no continuation) → UpstreamError.
+    # Anomalous: the model returns a client-side tool_use although client-side tools were NOT
+    # offered in a temporary chat. It cannot be handed off (no continuation) → UpstreamError.
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_rogueTemp"),
+        fake_anthropic.tool_result(fake_client, {"path": "a.txt"}, tool_id="toolu_rogueTemp"),
     ]
 
     r = await client.post(

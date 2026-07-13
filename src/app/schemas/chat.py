@@ -358,7 +358,9 @@ class ToolCallSchema(StrictModel):
         description="Идентификатор вызова инструмента. Возвращается клиентом в `toolCallId`."
     )
     name: str = Field(
-        description="Имя инструмента для исполнения на устройстве (например, `files.read`)."
+        description=(
+            "Имя инструмента для исполнения на устройстве (например, `example.client_tool`)."
+        )
     )
     args: dict[str, Any] = Field(description="Аргументы вызова инструмента.")
 

@@ -11,7 +11,7 @@
 ## Транзакционность tool_mutation
 Запись `tool_mutation` имеет две ветки в зависимости от того, где исполняется мутирующий tool:
 
-1. **client-side mutating** (`files.write`/`files.mkdir`, `calendar.create_events`, `reminders.create`) — `tool_mutation` записывается при обработке `/chat/tool-result` после подтверждённого клиентом результата (`tool_calls.status=completed`), чтобы фиксировать фактически выполненное на устройстве действие.
+1. **client-side mutating** — `tool_mutation` записывается при обработке `/chat/tool-result` после подтверждённого клиентом результата (`tool_calls.status=completed`), чтобы фиксировать фактически выполненное на устройстве действие. **С [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md) client-side мутирующих инструментов нет** (`files.write`/`files.mkdir`/`calendar.create_events`/`reminders.create` удалены) — эта ветка сохранена в контракте, но в штатном потоке не активируется; старые `tool_mutation`-записи остаются.
 2. **server-side mutating** (`site.write_file`, `site.delete`; см. [ADR-011](../../adr/ADR-011-server-side-tools.md)) — исполняются backend-хэндлером синхронно в tool-loop и через `/chat/tool-result` НЕ проходят. Поэтому `tool_mutation` пишется в момент синхронного исполнения хэндлера, в ТОЙ ЖЕ БД-транзакции, что и мутация `site_files` (без зависимости от `/chat/tool-result`). Гарантия: нет мутации `site_files` без соответствующего аудита.
 
 ## Append-only enforcement

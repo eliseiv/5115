@@ -4,8 +4,9 @@ Real PostgreSQL container, Anthropic faked at the client boundary. Covers (per t
 follow_up scenarios):
 1. Contract: /chat/run without projectId creates a session (project_id NULL) and answers normally;
    blank projectId → 422 and no session.
-2. Axis-A gating: no-project session → tools to Anthropic exclude site.* but keep client-side;
-   project session → full 13-tool set. Checked on both /chat/run and /chat/tool-result.
+2. Axis-A gating: no-project session → tools to Anthropic exclude site.* (ADR-063: no client-side
+   tool remains; a test-only fake client tool exercises the continuation); project session → full
+   server-side set. Checked on both /chat/run and /chat/tool-result.
 3. Resume session-fixed: session created with project A; resume body projectId=B → A is used
    (request field ignored, not an error); resume without projectId keeps site.* offered.
 4. Defensive-guard: fake Anthropic returns a site.* tool_use on a project-less session → 502
@@ -29,6 +30,7 @@ from app.chat.anthropic_client import AnthropicResult, AnthropicUsage
 from app.chat.tools import SERVER_SIDE_TOOLS, to_domain_tool_name
 from app.config import get_settings
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
 
 
 # --- helpers -------------------------------------------------------------------------------
@@ -125,16 +127,14 @@ async def test_no_project_session_does_not_offer_site_tools_on_run(
     )
     offered = _offered_domain_tools(fake_anthropic.calls[0])
     assert offered.isdisjoint(SERVER_SIDE_TOOLS)  # no site.*
-    # client-side tools still offered (axis A does not touch them).
-    assert "files.read" in offered
-    assert "calendar.read" in offered
-    assert "reminders.read" in offered
+    # ADR-063: no client-side tool remains registered/offered.
+    assert not any(n.startswith(("files.", "calendar.", "reminders.")) for n in offered)
     # ADR-026: time.now (global server-side) is offered even without a project.
     assert "time.now" in offered
     # ADR-058: image.generate (global server-side) is offered too — its key-gate is satisfied
     # (conftest forces a non-empty OPENAI_API_KEY); the project (axis-A) gate does not touch it.
     assert "image.generate" in offered
-    assert len(offered) == 10  # 8 client-side + time.now + image.generate
+    assert len(offered) == 2  # time.now + image.generate (no client-side; site.* dropped)
 
 
 @pytest.mark.asyncio
@@ -156,8 +156,8 @@ async def test_project_session_offers_full_server_side_set_on_run(
     assert offered >= SERVER_SIDE_TOOLS  # site.* present
     assert "time.now" in offered  # ADR-026: global server-side, always offered
     assert "image.generate" in offered  # ADR-058: global server-side, key-gate satisfied
-    # 8 client-side + 5 site.* + time.now + image.generate (quiz.generate is dialog-gated out).
-    assert len(offered) == 15
+    # ADR-063: 5 site.* + time.now + image.generate = 7 (quiz.generate is dialog-gated out).
+    assert len(offered) == 7
 
 
 @pytest.mark.asyncio
@@ -165,12 +165,14 @@ async def test_gating_holds_across_tool_result_continuation_no_project(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """has_project derives from sess.project_id on /chat/tool-result too → site.* still excluded."""
+    register_fake_client_tool(monkeypatch)  # ADR-063: test-only client-side example tool
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake_anthropic.text_result("done"),
     ]
     r1 = await client.post(
@@ -200,11 +202,13 @@ async def test_gating_holds_across_tool_result_continuation_with_project(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    register_fake_client_tool(monkeypatch)  # ADR-063: test-only client-side example tool
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}),
         fake_anthropic.text_result("done"),
     ]
     r1 = await client.post(

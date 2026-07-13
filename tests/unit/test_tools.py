@@ -19,10 +19,10 @@ from app.chat.tools import (
 _NON_QUIZ_TOOLS = set(ALL_TOOL_NAMES) - {TOOL_QUIZ_GENERATE}
 
 
-def test_validate_files_write_ok() -> None:
+def test_validate_site_write_file_ok() -> None:
     out = validate_tool_args(
-        "files.write",
-        {"path": "a/b.txt", "content": "x", "encoding": "utf8", "overwrite": True},
+        "site.write_file",
+        {"path": "a/b.txt", "content": "x", "contentType": "text/plain", "encoding": "utf8"},
     )
     assert out["path"] == "a/b.txt"
     assert out["encoding"] == "utf8"
@@ -31,43 +31,41 @@ def test_validate_files_write_ok() -> None:
 def test_validate_rejects_path_traversal() -> None:
     with pytest.raises(ValueError, match="traversal"):
         validate_tool_args(
-            "files.write",
-            {"path": "../etc/passwd", "content": "x", "encoding": "utf8", "overwrite": False},
+            "site.write_file",
+            {
+                "path": "../etc/passwd",
+                "content": "x",
+                "contentType": "text/plain",
+                "encoding": "utf8",
+            },
         )
 
 
 def test_validate_rejects_backslash_traversal() -> None:
     with pytest.raises(ValueError, match="traversal"):
-        validate_tool_args("files.read", {"path": "a\\..\\b"})
+        validate_tool_args("site.read", {"path": "a\\..\\b"})
 
 
 def test_validate_rejects_unknown_tool() -> None:
+    # ADR-063: files.* is gone; an unknown name (removed or never-existent) → "unknown tool".
     with pytest.raises(ValueError, match="unknown tool"):
         validate_tool_args("files.delete", {"path": "x"})
 
 
 def test_validate_rejects_extra_fields() -> None:
     with pytest.raises(ValueError):
-        validate_tool_args("files.read", {"path": "x", "unexpected": 1})
+        validate_tool_args("site.read", {"path": "x", "unexpected": 1})
 
 
 def test_validate_rejects_missing_required() -> None:
     with pytest.raises(ValueError):
-        validate_tool_args("files.write", {"path": "x"})
-
-
-def test_calendar_create_nested_events() -> None:
-    out = validate_tool_args(
-        "calendar.create_events",
-        {"events": [{"title": "t", "start": "2026-01-01", "end": "2026-01-02"}]},
-    )
-    assert len(out["events"]) == 1
+        validate_tool_args("site.write_file", {"path": "x"})
 
 
 def test_mutating_tools_subset() -> None:
     assert MUTATING_TOOLS <= ALL_TOOL_NAMES
-    assert "files.write" in MUTATING_TOOLS
-    assert "files.read" not in MUTATING_TOOLS
+    assert "site.write_file" in MUTATING_TOOLS
+    assert "site.read" not in MUTATING_TOOLS
 
 
 def test_anthropic_definitions_cover_all_non_quiz_tools() -> None:

@@ -29,6 +29,14 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import FAKE_CLIENT_TOOL, register_fake_client_tool
+
+
+@pytest.fixture(autouse=True)
+def _register_fake_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR-063: register a test-only client-side example tool (no shipped client-side tool remains).
+    register_fake_client_tool(monkeypatch)
+
 
 # A site.write_file payload (project-scoped server-side tool).
 _SITE_WRITE = {
@@ -200,7 +208,7 @@ async def test_server_tool_call_id_same_domain_as_client_tool_calls_id(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.tool_result("time.now", {}, tool_id="toolu_sym_srv"),
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_sym_cli"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_sym_cli"),
     ]
     r = await client.post(
         "/v1/chat/run",
@@ -306,7 +314,7 @@ async def test_idempotent_replay_continuation_server_tools_empty(
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_rep0"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_rep0"),
         fake_anthropic.text_result("final"),
     ]
     run = (
@@ -381,7 +389,7 @@ async def test_additivity_client_tool_calls_not_broken_by_server_tool_call_id(
         uid = await seed_user(s, subscription="active", balance=5)
     fake_anthropic.responses = [
         fake_anthropic.tool_result("time.now", {}, tool_id="toolu_mx1"),
-        fake_anthropic.tool_result("files.read", {"path": "a.txt"}, tool_id="toolu_mx2"),
+        fake_anthropic.tool_result(FAKE_CLIENT_TOOL, {"path": "a.txt"}, tool_id="toolu_mx2"),
     ]
     r = await client.post(
         "/v1/chat/run",
@@ -393,7 +401,7 @@ async def test_additivity_client_tool_calls_not_broken_by_server_tool_call_id(
     # client tool_call shape intact: id/name/args.
     tc = body["toolCalls"][0]
     assert set(tc.keys()) >= {"id", "name", "args"}
-    assert tc["name"] == "files.read"
+    assert tc["name"] == FAKE_CLIENT_TOOL
     _assert_valid_uuid(tc["id"])
     # server-side stays in serverTools[] only, and is NOT in toolCalls[].
     assert [e["toolName"] for e in body["serverTools"]] == ["time.now"]

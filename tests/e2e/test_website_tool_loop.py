@@ -17,6 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from tests.conftest import FakeAnthropicClient, auth_headers, seed_user
+from tests.fake_client_tool import (
+    FAKE_CLIENT_TOOL,
+    FAKE_CLIENT_TOOL_WIRE,
+    register_fake_client_tool,
+)
 
 
 @pytest.fixture
@@ -184,12 +189,14 @@ async def test_mixed_server_and_client_tools_hands_off_client_side(
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
     preview_secret: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A turn with a client-side tool returns status=tool_call; server-side ran on backend."""
+    register_fake_client_tool(monkeypatch)  # ADR-063: test-only client-side example tool
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
 
-    # One turn emits BOTH a server-side site.write_file AND a client-side files.read.
+    # One turn emits BOTH a server-side site.write_file AND a client-side tool.
     server_block = {
         "type": "tool_use",
         "id": "toolu_server1",
@@ -204,7 +211,7 @@ async def test_mixed_server_and_client_tools_hands_off_client_side(
     client_block = {
         "type": "tool_use",
         "id": "toolu_client1",
-        "name": "files_read",
+        "name": FAKE_CLIENT_TOOL_WIRE,
         "input": {"path": "a.txt"},
     }
     from app.chat.anthropic_client import AnthropicResult, AnthropicUsage
@@ -223,7 +230,7 @@ async def test_mixed_server_and_client_tools_hands_off_client_side(
         text="",
         tool_uses=[
             {"id": "toolu_server1", "name": "site.write_file", "input": server_block["input"]},
-            {"id": "toolu_client1", "name": "files.read", "input": client_block["input"]},
+            {"id": "toolu_client1", "name": FAKE_CLIENT_TOOL, "input": client_block["input"]},
         ],
     )
     fake_anthropic.responses = [mixed]
@@ -236,7 +243,7 @@ async def test_mixed_server_and_client_tools_hands_off_client_side(
     body = r.json()
     # Client-side tool is handed off to iOS.
     assert body["status"] == "tool_call"
-    assert body["toolCall"]["name"] == "files.read"
+    assert body["toolCall"]["name"] == FAKE_CLIENT_TOOL
     # Server-side write executed on the backend already (file persisted, mutation audited).
     async with db_sessionmaker() as s:
         files = await s.scalar(text("SELECT count(*) FROM site_files"))

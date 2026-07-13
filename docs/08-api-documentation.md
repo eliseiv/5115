@@ -18,7 +18,7 @@
 | Описания response-моделей и примеров | русский |
 | Сообщения об ошибках валидации (`detail`) | как есть (генерит FastAPI/Pydantic) |
 
-Остаются **в оригинале** (не переводятся): имена endpoint-путей (`/v1/chat/run`), имена полей схем (`sessionId`, `blockReason`), enum-значения (`assistant_message`, `credits`, `trial_used`), коды ошибок (`validation_error`, `unauthorized`), имена tools (`files.write`), HTTP-методы и коды, имена заголовков (`Authorization`, `X-Device-Id`, `X-Request-Id`).
+Остаются **в оригинале** (не переводятся): имена endpoint-путей (`/v1/chat/run`), имена полей схем (`sessionId`, `blockReason`), enum-значения (`assistant_message`, `credits`, `trial_used`), коды ошибок (`validation_error`, `unauthorized`), имена tools (`site.write_file`), HTTP-методы и коды, имена заголовков (`Authorization`, `X-Device-Id`, `X-Request-Id`).
 
 Правило: **описываем по-русски, идентифицируем по-английски**. Описание поля `sessionId` — на русском («Идентификатор сессии…»), само имя поля — `sessionId`.
 
@@ -154,8 +154,8 @@ OpenAPI-тексты (`summary`, `description` эндпоинтов, `Field(desc
 
 | Endpoint | Обязательные примеры |
 |---|---|
-| `POST /v1/chat/run` | request (`mode=credits`); response `assistant_message`; response `tool_call` с `toolCalls[]` (≥1, напр. `files.read`); response `blocked` (`credits_empty`); response `blocked` (`max_tokens`, [ADR-025](adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md) — с `usage`/`stepId`, без `toolCalls`). |
-| `POST /v1/chat/tool-result` | request батч `results[]` (один и несколько результатов хода); request с `error` в элементе; response `assistant_message` (финал loop); response `tool_call` с оставшимися `toolCalls[]` (барьер хода не закрыт, [ADR-025](adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)). |
+| `POST /v1/chat/run` | request (`mode=credits`); response `assistant_message`; response `blocked` (`credits_empty`); response `blocked` (`max_tokens`, [ADR-025](adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md) — с `usage`/`stepId`, без `toolCalls`). Пример `tool_call` с `toolCalls[]` **убран** — client-side инструментов больше нет ([ADR-063](adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md)); поле `toolCalls[]`/статус `tool_call` сохранены в схеме, но канонического примера с реальным инструментом нет. |
+| `POST /v1/chat/tool-result` | request батч `results[]` (форма батча/`error` сохраняются в схеме для обратной совместимости, но в штатном потоке не порождаются — нет client-side инструментов, [ADR-063](adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md)); response `assistant_message`. |
 | `POST /v1/wallet/consume` | request (`amount=1`, `requestId`); response (`newBalance`, `ledgerTxId`). |
 | `POST /v1/byok/set` | request (`apiKey` — плейсхолдер, помечен «не логируется»); response `keyStatus=valid` и `keyStatus=invalid`. |
 

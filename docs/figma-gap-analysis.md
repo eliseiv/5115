@@ -39,7 +39,7 @@
 | Chat run (Chat/Code), tool-loop, permission, blockReason | ✅ | chat-orchestrator, policy-engine | — | — |
 | Subscription sync, trial/credits | ✅ | subscription, wallet-ledger, ADR-006 | — | — |
 | BYOK set/toggle/delete | ✅ (статусы 🟡) | byok | — | — |
-| calendar.create_events tool + permission | ✅ | chat-orchestrator (client-side tools) | — | — |
+| calendar.create_events tool + permission | ❌ удалён ([ADR-063](adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md)) | — (client-side `calendar.*`/`reminders.*`/`files.*` убраны из сервиса решением владельца) | — | — |
 | Site generation / preview | ✅ | website-builder, ADR-010/011 | — | — |
 | **Chats list/search/rename/delete/pin, steps-view** | ✅ **реализовано** (Спринт 1) | **chats** поверх `chat_sessions`/`chat_steps` | ADR-012 (assistant_mode) | **1** |
 | **Profile (displayName, accountId)** | ✅ **реализовано** (Спринт 1) | **profile**, `users.display_name` | — | **1** |

@@ -62,7 +62,7 @@ def _function_call(
     *,
     id: str = "fc_1",
     call_id: str = "call_1",
-    name: str = "files_read",
+    name: str = "site_read",
     arguments: str = "{}",
 ) -> ResponseFunctionToolCall:
     return ResponseFunctionToolCall(
@@ -241,13 +241,13 @@ async def test_function_call_reverse_mapped_and_arguments_parsed() -> None:
     fake.responses.next_response = _response(
         output=[
             _function_call(
-                id="fc_a", call_id="call_a", name="files_read", arguments='{"path": "a.txt"}'
+                id="fc_a", call_id="call_a", name="site_read", arguments='{"path": "a.txt"}'
             ),
             _function_call(
                 id="fc_b",
                 call_id="call_b",
-                name="calendar_read",
-                arguments='{"start": "x", "end": "y"}',
+                name="site_list",
+                arguments="{}",
             ),
         ],
         status="completed",
@@ -256,8 +256,8 @@ async def test_function_call_reverse_mapped_and_arguments_parsed() -> None:
     assert result.stop_reason == STOP_REASON_TOOL_USE
     # underscore wire name → dotted domain name; arguments JSON-string → dict; raw call_id kept.
     assert result.tool_uses == [
-        {"id": "call_a", "name": "files.read", "input": {"path": "a.txt"}},
-        {"id": "call_b", "name": "calendar.read", "input": {"start": "x", "end": "y"}},
+        {"id": "call_a", "name": "site.read", "input": {"path": "a.txt"}},
+        {"id": "call_b", "name": "site.list", "input": {}},
     ]
 
 
@@ -266,7 +266,7 @@ async def test_tool_use_id_is_call_id_not_fc_id() -> None:
     # ADR-008/ADR-059 §1: correlate on call_id (call_...), NOT the item id (fc_...). Round-trip.
     client, fake = _client_with_fake()
     fake.responses.next_response = _response(
-        output=[_function_call(id="fc_x", call_id="call_x", name="files_read", arguments="{}")],
+        output=[_function_call(id="fc_x", call_id="call_x", name="site_read", arguments="{}")],
         status="completed",
     )
     result = await client.create_message(system_prompt="s", messages=[], tools=[], attachments=None)
@@ -279,7 +279,7 @@ async def test_content_blocks_persist_output_items_verbatim() -> None:
     # content_blocks = [item.model_dump(mode="json", exclude_none=True) for item in output].
     client, fake = _client_with_fake()
     msg = _text_message("hi", id="msg_1")
-    fc = _function_call(id="fc_1", call_id="call_1", name="files_read", arguments="{}")
+    fc = _function_call(id="fc_1", call_id="call_1", name="site_read", arguments="{}")
     fake.responses.next_response = _response(output=[msg, fc], status="completed")
     result = await client.create_message(system_prompt="s", messages=[], tools=[], attachments=None)
     assert result.content_blocks == [
@@ -292,7 +292,7 @@ async def test_content_blocks_persist_output_items_verbatim() -> None:
 async def test_function_call_invalid_json_arguments_raises_validation_failed() -> None:
     client, fake = _client_with_fake()
     fake.responses.next_response = _response(
-        output=[_function_call(call_id="call_x", name="files_read", arguments="{not json")],
+        output=[_function_call(call_id="call_x", name="site_read", arguments="{not json")],
         status="completed",
     )
     with pytest.raises(ValidationFailedError):
@@ -303,7 +303,7 @@ async def test_function_call_invalid_json_arguments_raises_validation_failed() -
 async def test_function_call_non_object_arguments_raises_validation_failed() -> None:
     client, fake = _client_with_fake()
     fake.responses.next_response = _response(
-        output=[_function_call(call_id="call_x", name="files_read", arguments="[1, 2, 3]")],
+        output=[_function_call(call_id="call_x", name="site_read", arguments="[1, 2, 3]")],
         status="completed",
     )
     with pytest.raises(ValidationFailedError):
@@ -325,11 +325,11 @@ async def test_function_call_unknown_name_raises_validation_failed() -> None:
 async def test_function_call_empty_arguments_string_becomes_empty_dict() -> None:
     client, fake = _client_with_fake()
     fake.responses.next_response = _response(
-        output=[_function_call(call_id="call_x", name="files_list", arguments="")],
+        output=[_function_call(call_id="call_x", name="site_list", arguments="")],
         status="completed",
     )
     result = await client.create_message(system_prompt="s", messages=[], tools=[], attachments=None)
-    assert result.tool_uses == [{"id": "call_x", "name": "files.list", "input": {}}]
+    assert result.tool_uses == [{"id": "call_x", "name": "site.list", "input": {}}]
 
 
 # ============================ web_search_call is never a tool_use ============================
@@ -355,13 +355,13 @@ async def test_web_search_call_alongside_function_call_only_function_becomes_too
     fake.responses.next_response = _response(
         output=[
             _web_search_call(),
-            _function_call(call_id="call_z", name="files_read", arguments="{}"),
+            _function_call(call_id="call_z", name="site_read", arguments="{}"),
         ],
         status="completed",
     )
     result = await client.create_message(system_prompt="s", messages=[], tools=[], attachments=None)
     assert result.stop_reason == STOP_REASON_TOOL_USE
-    assert result.tool_uses == [{"id": "call_z", "name": "files.read", "input": {}}]
+    assert result.tool_uses == [{"id": "call_z", "name": "site.read", "input": {}}]
 
 
 # ============================ input building from neutral history ============================
@@ -393,7 +393,7 @@ async def test_build_input_replays_assistant_output_and_tool_result_by_call_id()
         "type": "function_call",
         "id": "fc_1",
         "call_id": "call_x",
-        "name": "files_read",
+        "name": "site_read",
         "arguments": "{}",
         "status": "completed",
     }
@@ -404,7 +404,7 @@ async def test_build_input_replays_assistant_output_and_tool_result_by_call_id()
             role="tool",
             tool_call_id="dom-1",
             provider_tool_use_id="call_x",
-            tool_name="files.read",
+            tool_name="site.read",
             result={"ok": True},
         ),
     ]
@@ -455,7 +455,10 @@ async def test_raw_dict_message_passed_through_unchanged() -> None:
 
 # ============================ tools (flat Responses wire) + gating ============================
 @pytest.mark.asyncio
-async def test_serialize_tools_to_flat_function_shape() -> None:
+async def test_serialize_tools_to_flat_function_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.fake_client_tool import FAKE_CLIENT_TOOL_WIRE, register_fake_client_tool
+
+    register_fake_client_tool(monkeypatch)  # ADR-063: a test-only client-side example tool
     client, fake = _client_with_fake()
     fake.responses.next_response = _response()
     await client.create_message(
@@ -472,13 +475,18 @@ async def test_serialize_tools_to_flat_function_shape() -> None:
         assert set(t) == {"type", "name", "description", "parameters", "strict"}
         assert "." not in t["name"]  # underscore transport name, dots forbidden
     names = {t["name"] for t in sent_tools}
-    assert "files_read" in names
+    assert FAKE_CLIENT_TOOL_WIRE in names  # client-side offered when include_client_side=True
     assert "site_write_file" in names  # server-side offered when include_server_side=True
     assert "time_now" in names
 
 
 @pytest.mark.asyncio
-async def test_server_side_gating_excludes_site_tools_when_no_project() -> None:
+async def test_server_side_gating_excludes_site_tools_when_no_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.fake_client_tool import FAKE_CLIENT_TOOL_WIRE, register_fake_client_tool
+
+    register_fake_client_tool(monkeypatch)  # ADR-063: a test-only client-side example tool
     client, fake = _client_with_fake()
     fake.responses.next_response = _response()
     await client.create_message(
@@ -489,15 +497,21 @@ async def test_server_side_gating_excludes_site_tools_when_no_project() -> None:
     )
     names = {t["name"] for t in fake.responses.calls[0]["tools"]}
     assert not any(n.startswith("site_") for n in names)  # site.* excluded
-    assert "files_read" in names  # client-side still offered
+    assert FAKE_CLIENT_TOOL_WIRE in names  # client-side still offered
     assert "time_now" in names  # global server-side always offered (ADR-026)
 
 
 @pytest.mark.asyncio
-async def test_client_side_gating_excludes_client_tools_when_temporary() -> None:
-    # ADR-056: a temporary chat drops client-side tools (files.*/calendar.*/reminders.*) — they
-    # need DB continuation via /chat/tool-result, unavailable without persistence. Server-side
-    # tools (site.* with a project + the global time.now) stay offered — executed in-request.
+async def test_client_side_gating_excludes_client_tools_when_temporary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR-056: a temporary chat drops client-side tools — they need DB continuation via
+    # /chat/tool-result, unavailable without persistence. ADR-063 removed all shipped client-side
+    # tools, so a test-only fake client tool stands in as the dropped example. Server-side tools
+    # (site.* with a project + the global time.now) stay offered — executed in-request.
+    from tests.fake_client_tool import FAKE_CLIENT_TOOL_WIRE, register_fake_client_tool
+
+    register_fake_client_tool(monkeypatch)
     client, fake = _client_with_fake()
     fake.responses.next_response = _response()
     await client.create_message(
@@ -507,10 +521,8 @@ async def test_client_side_gating_excludes_client_tools_when_temporary() -> None
         attachments=None,
     )
     names = {t["name"] for t in fake.responses.calls[0]["tools"]}
-    # No client-side function-tools are offered.
-    assert not any(n.startswith("files_") for n in names)
-    assert not any(n.startswith("calendar_") for n in names)
-    assert not any(n.startswith("reminders_") for n in names)
+    # No client-side function-tools are offered (the fake client tool is dropped).
+    assert FAKE_CLIENT_TOOL_WIRE not in names
     # Server-side tools remain: project-scoped site.* (include_server_side=True) + global time.now.
     assert "site_write_file" in names
     assert "time_now" in names
@@ -937,7 +949,7 @@ async def test_search_adds_web_search_tool_alongside_function_tools() -> None:
     assert web_search[0]["search_context_size"] == get_settings().resolved_search_context_size()
     # function-tools are STILL present alongside the built-in web_search tool.
     assert any(t.get("type") == "function" for t in sent_tools)
-    assert any(t.get("name") == "files_read" for t in sent_tools)
+    assert any(t.get("name") == "time_now" for t in sent_tools)
 
 
 @pytest.mark.asyncio

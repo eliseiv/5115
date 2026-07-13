@@ -1,14 +1,15 @@
-"""Tool schemas (CO-1): client-side iOS tools + server-side site.* tools, Pydantic v2.
+"""Tool schemas (CO-1): server-side site.* / global tools, Pydantic v2.
 
-Two classes (ADR-011):
-- client-side (files.*/calendar.*/reminders.*): backend only INITIATES the tool-call; the iOS
-  client executes it and posts a tool_result.
-- server-side (site.*): backend EXECUTES the handler itself, in the same tool-loop, without a
-  round-trip to iOS (SERVER_SIDE_TOOLS).
+Tool classes (ADR-011):
+- server-side project-scoped (site.*): backend EXECUTES the handler itself, in the same
+  tool-loop, without a round-trip to iOS (SERVER_SIDE_TOOLS).
+- server-side global (time.now/quiz.generate/image.generate): executed by the backend without
+  a project (GLOBAL_SERVER_SIDE_TOOLS).
+- client-side: backend only INITIATES the tool-call and the iOS client executes it; the
+  protocol is retained but no client-side tool is currently registered.
 
-Mutating tools (files.write, files.mkdir, calendar.create_events, reminders.create,
-site.write_file, site.delete) require an audit record. Args/result are strictly validated
-(extra='forbid'); `path` rejects `..`-traversal.
+Mutating tools (site.write_file, site.delete, image.generate) require an audit record.
+Args/result are strictly validated (extra='forbid'); `path` rejects `..`-traversal.
 """
 
 from __future__ import annotations
@@ -18,16 +19,6 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import IMAGE_QUALITY_VALUES, IMAGE_SIZE_VALUES, get_settings
-
-# Tool names (fixed list — validated at the API boundary).
-TOOL_FILES_READ = "files.read"
-TOOL_FILES_WRITE = "files.write"
-TOOL_FILES_LIST = "files.list"
-TOOL_FILES_MKDIR = "files.mkdir"
-TOOL_CALENDAR_READ = "calendar.read"
-TOOL_CALENDAR_CREATE = "calendar.create_events"
-TOOL_REMINDERS_READ = "reminders.read"
-TOOL_REMINDERS_CREATE = "reminders.create"
 
 # Server-side tools (site.*, ADR-011): executed by the backend, not the iOS client.
 TOOL_SITE_WRITE_FILE = "site.write_file"
@@ -78,14 +69,6 @@ GLOBAL_SERVER_SIDE_TOOLS = frozenset({TOOL_TIME_NOW, TOOL_QUIZ_GENERATE, TOOL_IM
 
 ALL_TOOL_NAMES = frozenset(
     {
-        TOOL_FILES_READ,
-        TOOL_FILES_WRITE,
-        TOOL_FILES_LIST,
-        TOOL_FILES_MKDIR,
-        TOOL_CALENDAR_READ,
-        TOOL_CALENDAR_CREATE,
-        TOOL_REMINDERS_READ,
-        TOOL_REMINDERS_CREATE,
         *SERVER_SIDE_TOOLS,
         *GLOBAL_SERVER_SIDE_TOOLS,
     }
@@ -93,22 +76,15 @@ ALL_TOOL_NAMES = frozenset(
 
 # BUG-3: Anthropic Messages API requires tool.name to match ^[a-zA-Z0-9_-]{1,128}$ — a dot is
 # rejected with 400 (→ backend 502). The public iOS contract (TZ §5) uses dotted domain names and
-# must NOT change. We therefore keep a static, bidirectional name map (13 fixed pairs, incl.
-# server-side site.*) that is the single source of truth for name correspondence. It is applied
+# must NOT change. We therefore keep a static, bidirectional name map (8 fixed pairs: 5
+# server-side site.* + time_now + quiz_generate + image_generate) that is the single source of
+# truth for name correspondence. It is applied
 # ONLY at the Anthropic transport
 # boundary: forward (domain→anthropic) when building tools[].name for messages.create, reverse
 # (anthropic→domain) when parsing a tool_use block from Claude. Everywhere else — DB
 # (tool_calls.tool_name), audit, API responses (toolCall.name), arg/result typing — stays domain.
 _DOMAIN_TO_ANTHROPIC: dict[str, str] = {
-    TOOL_FILES_READ: "files_read",
-    TOOL_FILES_WRITE: "files_write",
-    TOOL_FILES_LIST: "files_list",
-    TOOL_FILES_MKDIR: "files_mkdir",
-    TOOL_CALENDAR_READ: "calendar_read",
-    TOOL_CALENDAR_CREATE: "calendar_create_events",
-    TOOL_REMINDERS_READ: "reminders_read",
-    TOOL_REMINDERS_CREATE: "reminders_create",
-    # Server-side site.* (ADR-011 §3): same dot→underscore mapping as client-side tools.
+    # Server-side site.* (ADR-011 §3): dot→underscore mapping.
     TOOL_SITE_WRITE_FILE: "site_write_file",
     TOOL_SITE_PREVIEW: "site_preview",
     TOOL_SITE_LIST: "site_list",
@@ -153,10 +129,6 @@ def to_domain_tool_name(anthropic_name: str) -> str:
 # Mutating tools require audit (AC-7; ADR-011 §4 adds site.write_file / site.delete).
 MUTATING_TOOLS = frozenset(
     {
-        TOOL_FILES_WRITE,
-        TOOL_FILES_MKDIR,
-        TOOL_CALENDAR_CREATE,
-        TOOL_REMINDERS_CREATE,
         TOOL_SITE_WRITE_FILE,
         TOOL_SITE_DELETE,
         # ADR-058 §1/§4: image.generate writes bytes (generated_images) AND is tariffed — a real
@@ -189,62 +161,6 @@ class _PathModel(_StrictModel):
     @classmethod
     def _check_path(cls, value: str) -> str:
         return _validate_safe_path(value)
-
-
-# --- files ---
-class FilesReadArgs(_PathModel):
-    pass
-
-
-class FilesWriteArgs(_PathModel):
-    content: str
-    encoding: Literal["utf8", "base64"]
-    overwrite: bool
-
-
-class FilesListArgs(_PathModel):
-    recursive: bool
-
-
-class FilesMkdirArgs(_PathModel):
-    createIntermediates: bool
-
-
-# --- calendar ---
-class CalendarReadArgs(_StrictModel):
-    start: str
-    end: str
-    calendarId: str | None = None
-
-
-class CalendarEventInput(_StrictModel):
-    title: str
-    start: str
-    end: str
-    location: str | None = None
-    notes: str | None = None
-    calendarId: str | None = None
-
-
-class CalendarCreateArgs(_StrictModel):
-    events: list[CalendarEventInput]
-
-
-# --- reminders ---
-class RemindersReadArgs(_StrictModel):
-    listId: str | None = None
-    includeCompleted: bool
-
-
-class ReminderInput(_StrictModel):
-    title: str
-    due: str | None = None
-    notes: str | None = None
-    listId: str | None = None
-
-
-class RemindersCreateArgs(_StrictModel):
-    reminders: list[ReminderInput]
 
 
 # --- server-side site.* (ADR-011) ---
@@ -417,14 +333,6 @@ class ImageGenerateArgs(_StrictModel):
 
 
 _ARGS_BY_TOOL: dict[str, type[_StrictModel]] = {
-    TOOL_FILES_READ: FilesReadArgs,
-    TOOL_FILES_WRITE: FilesWriteArgs,
-    TOOL_FILES_LIST: FilesListArgs,
-    TOOL_FILES_MKDIR: FilesMkdirArgs,
-    TOOL_CALENDAR_READ: CalendarReadArgs,
-    TOOL_CALENDAR_CREATE: CalendarCreateArgs,
-    TOOL_REMINDERS_READ: RemindersReadArgs,
-    TOOL_REMINDERS_CREATE: RemindersCreateArgs,
     TOOL_SITE_WRITE_FILE: SiteWriteFileArgs,
     TOOL_SITE_PREVIEW: SitePreviewArgs,
     TOOL_SITE_LIST: SiteListArgs,
@@ -439,22 +347,6 @@ _ARGS_BY_TOOL: dict[str, type[_StrictModel]] = {
 # Human-readable tool descriptions — single source of truth for both the Anthropic tool
 # definitions and the GET /v1/tools catalog (ADR-019).
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    TOOL_FILES_READ: "Read a file from the user's device.",
-    TOOL_FILES_WRITE: "Write a file on the user's device.",
-    TOOL_FILES_LIST: "List files/directories on the user's device.",
-    TOOL_FILES_MKDIR: "Create a directory on the user's device.",
-    TOOL_CALENDAR_READ: (
-        "Read calendar events within a time range. 'start' and 'end' are ISO8601 datetime "
-        "strings in local time without timezone offset, e.g. '2026-06-11T09:00:00'. For a "
-        "whole day use start at 00:00:00 and end at the next day 00:00:00 (end-exclusive). "
-        "Use the time.now tool if you do not know the current date."
-    ),
-    TOOL_CALENDAR_CREATE: (
-        "Create calendar events. Each event's 'start' and 'end' are ISO8601 datetime strings "
-        "in local time without timezone offset, e.g. '2026-06-11T09:00:00'."
-    ),
-    TOOL_REMINDERS_READ: "Read reminders.",
-    TOOL_REMINDERS_CREATE: "Create reminders.",
     TOOL_SITE_WRITE_FILE: (
         "Write or overwrite a file in the website project. Path is relative to the project "
         "root. Use encoding 'utf8' for text (HTML/CSS/JS) and 'base64' for binary assets "
@@ -651,7 +543,7 @@ def neutral_tool_definitions(
     The ``include_server_side`` gate is identical to ``anthropic_tool_definitions`` (ADR-022 axis A:
     drop project-scoped ``site.*`` when there is no project; ``GLOBAL_SERVER_SIDE_TOOLS`` like
     ``time.now`` are never gated — ADR-026 §3). The ``include_client_side`` gate (ADR-056) drops
-    client-side tools (``files.*``/``calendar.*``/``reminders.*``) for a temporary chat; server-side
+    client-side tools for a temporary chat; server-side
     tools are unaffected. The ``dialog_mode`` gate (ADR-057 §4) drops the GLOBAL server-side
     ``quiz.generate`` unless ``dialog_mode == "study_learn"`` — the orchestrator forwards the
     session-fixed dialog mode so the quiz tool is offered only in Study & Learn.

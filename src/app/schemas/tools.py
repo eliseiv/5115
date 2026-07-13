@@ -10,7 +10,7 @@ from app.schemas.common import StrictModel
 
 
 class ToolDescriptor(StrictModel):
-    name: str = Field(description="Доменное имя инструмента с точкой (например `files.read`).")
+    name: str = Field(description="Доменное имя инструмента с точкой (например `site.write_file`).")
     description: str = Field(description="Назначение инструмента.")
     mutating: bool = Field(description="Меняет ли инструмент данные (требует подтверждения в UI).")
     execution: Literal["client", "server"] = Field(

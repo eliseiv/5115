@@ -198,12 +198,14 @@ Anthropic; `StoreKit-test` = нужен `STOREKIT_TEST_MODE`; `—` = незав
 ### 4.5 Tool-loop с реальным Claude (AC-4)
 | ID | Сценарий | Ожидание | Зависимость |
 |---|---|---|---|
-| E2E-TOOL-1 | `chat/run` с промптом, провоцирующим минимум 2 раунда tool-use (например, через `files.list` → `files.read`) | последовательность `tool_call` → `tool-result` → `tool_call` → … → `assistant_message`; `toolCall` строго по схемам tools | **Claude** |
-| E2E-TOOL-2 | Мутирующий tool (`files.write` / `calendar.create_events` / `reminders.create`) в loop | audit-запись на каждое мутирующее tool-действие (AC-7) | **Claude** |
-| E2E-TOOL-3 | `tool-result` c `error` вместо `result` | backend передаёт Claude `is_error=true`, loop продолжается корректно | **Claude** |
+> **[ADR-063](adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md):** client-side инструменты (`files.*`/`calendar.*`/`reminders.*`) удалены — сценарии, завязанные на client-side `tool_call`→`/chat/tool-result` (E2E-TOOL-1/2/3/5/6), больше нельзя воспроизвести реальными инструментами. Многораундовый/мутирующий tool-loop с реальным Claude воспроизводится на **server-side** `site.*` (требуют проекта, исполняются на бэке); проверку самого client-side протокола (барьер, батч tool-result) — на **тестовом фейковом** client-side инструменте (фикстура, не поставляется). Зона qa (пересмотр сценариев).
+
+| E2E-TOOL-1 | `chat/run` с промптом, провоцирующим минимум 2 раунда tool-use (server-side `site.list` → `site.read`, проект обязателен) | последовательность server-side раундов → `assistant_message`; `serverTools[]` строго по схемам | **Claude** |
+| E2E-TOOL-2 | Мутирующий tool (`site.write_file` / `site.delete`) в loop | audit-запись на каждое мутирующее tool-действие (AC-7) | **Claude** |
+| E2E-TOOL-3 | client-side `tool-result` c `error` вместо `result` (фейковый client-side инструмент) | backend передаёт Claude `is_error=true`, loop продолжается корректно | **Claude** + фейк-tool |
 | E2E-TOOL-4 | `tool-result` с `toolCallId` чужой/несуществующей сессии | `404`/`403` | — |
-| E2E-TOOL-5 | `tool-result` с `result`, нарушающим схему tool | `422` | — |
-| E2E-TOOL-6 | **Parallel tool use ([ADR-025](adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)):** промпт, провоцирующий несколько client-side tool_use в одном ходе (напр. два `files.write`) | ответ `tool_call` с `toolCalls[]` (≥2); continuation к Claude **только** после батч `tool-result` на все вызовы (барьер хода); ровно 1 debit на весь ход | **Claude** |
+| E2E-TOOL-5 | `tool-result` с `result`, нарушающим схему tool (фейковый client-side инструмент) | `422` | — |
+| E2E-TOOL-6 | **Parallel tool use ([ADR-025](adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)):** несколько client-side tool_use в одном ходе (фейковый client-side инструмент, ×2) | ответ `tool_call` с `toolCalls[]` (≥2); continuation к Claude **только** после батч `tool-result` на все вызовы (барьер хода); ровно 1 debit на весь ход | **Claude** + фейк-tool |
 | E2E-TOOL-7 | **max_tokens-обрезка ([ADR-025](adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)):** запрос с искусственно малым `ANTHROPIC_MAX_TOKENS` (через env), провоцирующий `stop_reason="max_tokens"` | `200 status=blocked`, `blockReason=max_tokens`, `usage`/`messageStepId`/`stepId` присутствуют, `toolCalls` отсутствуют, **кредит не списан** | **Claude** |
 
 ### 4.6 BYOK set/toggle/delete + routing (AC-5, BR-4)

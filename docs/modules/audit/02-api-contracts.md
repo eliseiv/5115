@@ -21,7 +21,7 @@ AuditEvent = {
 ## Каталог eventType
 | eventType | Источник | Обязателен для AC |
 |---|---|---|
-| `tool_mutation` | Orchestrator (files.write/mkdir, calendar.create_events, reminders.create; server-side site.write_file/site.delete) | AC-7 |
+| `tool_mutation` | Orchestrator (server-side site.write_file/site.delete; client-side мутирующие `files.*`/`calendar.*`/`reminders.*` удалены — [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md); старые записи сохраняются) | AC-7 |
 | `billing_debit` | Wallet | AC-7 |
 | `billing_credit` | Wallet | — |
 | `policy_decision` | Orchestrator | — |

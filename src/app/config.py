@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(default="claude-sonnet-4-5", alias="ANTHROPIC_MODEL")
     # ADR-025: output budget per call. Raised 4096→16000 so code/file generation (several
-    # files.write with full content) is not truncated by max_tokens. Stays non-streaming; 16000
+    # site.write_file with full content) is not truncated by max_tokens. Stays non-streaming; 16000
     # is below the SDK non-streaming guard. Per-instance in .env (applied to every deploy instance).
     anthropic_max_tokens: int = Field(default=16000, alias="ANTHROPIC_MAX_TOKENS")
     # ADR-025: raised 60→120 to avoid a false 502 timeout on a long non-streaming generation at

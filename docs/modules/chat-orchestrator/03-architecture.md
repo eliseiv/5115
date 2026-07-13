@@ -57,8 +57,8 @@ stateDiagram-v2
 Anthropic Messages API не принимает точку в имени tool (`^[a-zA-Z0-9_-]{1,128}$`). Чтобы не менять публичный iOS-контракт (доменные имена с точкой, ТЗ §5), вводится двунаправленный статический маппинг `domain ↔ anthropic` (замена `.`↔`_`, таблица — [02-api-contracts.md](02-api-contracts.md#имена-tools-доменный-ios-vs-anthropic-формат)).
 
 Две и только две точки применения маппинга, обе в слое Anthropic-клиента:
-1. **At request build** — `anthropic_tool_definitions()` отдаёт `tools[].name` в **anthropic-формате** (forward: `files.read`→`files_read`). Применяется и в `/chat/run` (шаг 5), и при продолжении из `/chat/tool-result` (повторный `messages.create` с tool_result-блоком).
-2. **At tool_use parse** — при разборе `content` block `type=tool_use` из ответа Claude применяется **reverse** (`files_read`→`files.read`) до создания `tool_calls` и до формирования `toolCall.name`.
+1. **At request build** — `anthropic_tool_definitions()` отдаёт `tools[].name` в **anthropic-формате** (forward: `site.read`→`site_read`). Применяется и в `/chat/run` (шаг 5), и при продолжении из `/chat/tool-result` (повторный `messages.create` с tool_result-блоком).
+2. **At tool_use parse** — при разборе `content` block `type=tool_use` из ответа Claude применяется **reverse** (`site_read`→`site.read`) до создания `tool_calls` и до формирования `toolCall.name`.
 
 Инварианты:
 - За пределами этих двух точек (БД `tool_calls.tool_name`, audit, ответы API, типизация args/result) — **только доменные имена с точкой**.
@@ -163,6 +163,7 @@ tool-loop / server-side tools / attachments / нормализация payload /
 - В byok-режиме аналог — проверка против allowlist провайдера **ключа** (см. [§Мульти-провайдерный BYOK-роутинг](#мульти-провайдерный-byok-роутинг-adr-044) п.3). Credits проверяет против активного провайдера, byok — против провайдера ключа.
 
 ## Параллельные client-side tool-вызовы и барьер хода (ADR-025)
+> **Примечание ([ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md)):** после удаления `files.*`/`calendar.*`/`reminders.*` в классе client-side нет зарегистрированных инструментов, поэтому в штатном потоке `tool_use` client-side не порождаются и барьер не активируется. Механизм ниже сохранён в коде/контракте (реплей старых сессий, будущие client-side инструменты, [Q-063-1](../../99-open-questions.md)).
 
 Claude в одном assistant-ходе может вернуть **несколько** `tool_use`-блоков (parallel tool use). Хранение это уже поддерживает поблочно ([ADR-008](../../adr/ADR-008-provider-tool-use-id.md): каждый блок → свой `tool_calls` с domain id + `provider_tool_use_id`). [ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md) распространяет это на публичный ответ и continuation.
 
@@ -177,7 +178,7 @@ Claude в одном assistant-ходе может вернуть **нескол
 
 ## Обработка обрезки по max_tokens (ADR-025)
 
-`anthropic_client.create_message` — non-streaming, `max_tokens = ANTHROPIC_MAX_TOKENS`. При недостаточном лимите Claude обрывает ход с `stop_reason="max_tokens"`; в `content` могут быть **неполные** `tool_use`-блоки (например `files.write` без `content`).
+`anthropic_client.create_message` — non-streaming, `max_tokens = ANTHROPIC_MAX_TOKENS`. При недостаточном лимите Claude обрывает ход с `stop_reason="max_tokens"`; в `content` могут быть **неполные** `tool_use`-блоки (например `site.write_file` без `content`).
 
 **Нормативный контракт ([ADR-025](../../adr/ADR-025-parallel-tool-calls-and-max-tokens-truncation.md)):**
 1. **Диспетчеризация по `stop_reason`, не по наличию tool_use-блоков.** Ветка tool_use берётся **только** при `stop_reason="tool_use"`. **Прежний дефект:** условие `if stop_reason == "tool_use"` без обработки `max_tokens` → обрезанный ход с tool_use-блоками уходил в else → `status=assistant_message`, `toolCall=null`, неполные `tool_use` молча терялись (но персистились в `chat_steps.payload` как неполные блоки).
@@ -192,7 +193,7 @@ Claude в одном assistant-ходе может вернуть **нескол
 Сервис — прежде всего **чат-агрегатор**; website-builder (`site.*`) — **опциональная** фича. Набор tools, предлагаемый Claude, **зависит от наличия `chat_sessions.project_id`** сессии ([ADR-022](../../adr/ADR-022-optional-project-and-tool-gating.md)).
 
 **Нормативный контракт гейтинга:**
-1. `project_id IS NULL` («чистый чат», создан без `projectId`) → tools для `messages.create` = все client-side (`files.*`/`calendar.*`/`reminders.*`) **минус** `SERVER_SIDE_TOOLS` (`site.*`). Claude `site.*` не видит и вызвать не может.
+1. `project_id IS NULL` («чистый чат», создан без `projectId`) → tools для `messages.create` = global server-side (`time.now`, и по гейтам `quiz.generate`/`image.generate`) **минус** `SERVER_SIDE_TOOLS` (`site.*`). Claude `site.*` не видит и вызвать не может. (Client-side инструментов больше нет, [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md).)
 2. `project_id IS NOT NULL` → полный набор tools (включая `site.*`), как до ADR-022.
 3. Гейт по `project_id` — **НЕ единственный целевой** фильтр `site.*`. **Целевой контракт (Q-012-1 Open):** доступность `site.*` определяется **И-композицией двух ортогональных осей** одного реестра: ось A — наличие проекта (`project_id IS NOT NULL`, ADR-022); ось B — тип ассистента (`assistant_mode` допускает `site.*`, [Q-012-1](../../99-open-questions.md)/[ADR-012 §25](../../adr/ADR-012-assistant-mode-vs-billing-mode.md): дефолт `code` — допускает, `chat` — реестр без `site.*`/`files.*`). Целевой итог: `offer(site.*) ⟺ (project_id IS NOT NULL) AND (assistant_mode допускает site.*)`. **Сейчас реализована ось A (`project_id`)**: `anthropic_tool_definitions(include_server_side=...)` фильтрует `SERVER_SIDE_TOOLS` по наличию проекта; orchestrator передаёт `include_server_side` в `_generate_loop` на основе `project_id` сессии. **Ось B (`assistant_mode`) — [Q-012-1](../../99-open-questions.md) Open, сознательно НЕ реализована** (согласовано с docstring `anthropic_tool_definitions` в `tools.py`). При закрытии Q-012-1 ось B складывается по И тем же параметром `include_server_side` (фильтрация реестра по `assistant_mode`), без слома оси A.
 4. **Defensive-guard:** `_external_project_id()` (резолв проекта для исполнения `site.*`) вызывается **только** на ветке с непустым `project_id`. Если при `project_id IS NULL` Claude всё же вернёт `tool_use` с именем из `SERVER_SIDE_TOOLS` (не должно случиться — tool не предлагался), backend `site.*` **не исполняет**: трактует как upstream-аномалию обработки tool_use (как неизвестное имя tool, ADR-008), наружу как валидный tool не транслирует.
@@ -209,7 +210,7 @@ Claude в одном assistant-ходе может вернуть **нескол
 
 | Класс | Реестр | Исполнитель | Проект | Предлагается |
 |---|---|---|---|---|
-| client-side | `files.*`/`calendar.*`/`reminders.*` | iOS (round-trip) | — | по `assistant_mode` ([Q-012-1](../../99-open-questions.md)) |
+| client-side | — (нет инструментов, [ADR-063](../../adr/ADR-063-remove-client-side-calendar-reminders-files-tools.md)) | iOS (round-trip) | — | по `assistant_mode` ([Q-012-1](../../99-open-questions.md)) |
 | server-side, project-scoped | `SERVER_SIDE_TOOLS` (`site.*`) | backend в loop | **да** | только при `project_id IS NOT NULL` |
 | **server-side, global** | `GLOBAL_SERVER_SIDE_TOOLS` (`time.now`) | backend в loop | **нет** | **ВСЕГДА** |
 
