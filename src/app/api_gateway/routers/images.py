@@ -11,10 +11,10 @@ inaccessibility is unconditional, independent of physical GC — ADR-058 §2). S
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Path, Query, Response
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import CursorResult, and_, delete, func, or_, select
 
 from app.api_gateway.rate_limit import enforce_other_limits
 from app.chat.image_cursor import ImageCursor, InvalidCursorError
@@ -170,3 +170,52 @@ async def get_image(
         media_type=row.content_type,
         headers=dict(_SECURITY_HEADERS),
     )
+
+
+@router.delete(
+    "/{imageId}",
+    summary="Удалить сгенерированное изображение",
+    description=(
+        "Удаляет изображение, сгенерированное инструментом `image.generate`. Доступ только "
+        "владельцу (`user_id == sub`); чужое, отсутствующее ИЛИ истёкшее (TTL временного чата) → "
+        "`404` (не раскрываем существование). История чата не затрагивается, кредиты не "
+        "возвращаются. Заголовки: `X-Content-Type-Options: nosniff`, `Cache-Control: private, "
+        "no-store`."
+    ),
+    responses={
+        204: {"description": "Изображение удалено."},
+        404: {"description": "Изображение не найдено, чужое или истёкшее."},
+    },
+)
+async def delete_image(
+    session: DbSession,
+    current: CurrentUser,
+    image_id: Annotated[uuid.UUID, Path(alias="imageId")],
+) -> Response:
+    await _rate_limit(current.user_id)
+    # ADR-058 §6: opportunistic best-effort sweep of expired rows (Redis-throttled, own tx, fail-
+    # open). Runs BEFORE the delete so the session is clean; correctness does not depend on it (the
+    # freshness condition below already prevents deleting an expired row).
+    await maybe_sweep_expired_images(session)
+
+    # ADR-058 §9: owner isolation + freshness in the SAME statement. Foreign/expired/missing simply
+    # match no row → 404 (never 403 — we do not reveal existence of another user's resource).
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            delete(GeneratedImage).where(
+                GeneratedImage.id == image_id,
+                GeneratedImage.user_id == current.user_id,
+                or_(
+                    GeneratedImage.expires_at.is_(None),
+                    GeneratedImage.expires_at > func.now(),
+                ),
+            )
+        ),
+    )
+    # Explicit commit follows the established direct-delete precedents (ChatsRepository.
+    # delete_session, WorkspacesRepository.delete_workspace / .delete_file); no new tx is opened.
+    await session.commit()
+    if (result.rowcount or 0) == 0:
+        return Response(status_code=404, headers=dict(_SECURITY_HEADERS))
+    return Response(status_code=204, headers=dict(_SECURITY_HEADERS))
