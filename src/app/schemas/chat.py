@@ -143,6 +143,27 @@ class ChatRunRequest(StrictModel):
         default=None,
         description="Опциональный контекст клиента (например, локаль). Ограничен по размеру.",
     )
+    actionPrompt: str | None = Field(
+        default=None,
+        description=(
+            "Промт экшена: уходит модели, но НЕ отображается пользователю (ни в истории чата, ни "
+            "в превью, ни в поиске, ни в заголовке). Свободный текст. Способ доставки — "
+            "per-message: поле привязано к конкретному ходу, на сессию НЕ фиксируется и "
+            "присылается на том ходе, где нужно (в отличие от настроек сессии). ВНИМАНИЕ, "
+            "горизонт влияния шире одного хода: текст становится частью контента этого хода и в "
+            "обычном (персистентном) чате подаётся модели вместе с историей и на ВСЕХ "
+            "последующих ходах — пользователь промт не видит, но модель продолжает его "
+            "учитывать. Во временном чате (`temporary=true`) промт влияет только на тот ход, где "
+            "прислан: он нигде не сохраняется и в клиентский транскрипт `history` не попадает; "
+            "нужен эффект на следующем ходе — пришлите промт снова. "
+            "Пустое/из одних пробелов значение считается отсутствующим. Ход валиден, "
+            "если есть непустой `message`, ИЛИ хотя бы одно вложение, ИЛИ непустой `actionPrompt` "
+            "— поэтому `message` можно оставить пустым. Исключение: во ВРЕМЕННОМ чате "
+            "(`temporary=true`) непустой `actionPrompt` требует непустого `message` (иначе 422) — "
+            "скрытый промт нечем представить в клиентском транскрипте следующего хода. "
+            "Ограничен по размеру (16 KB). В `/v1/chat/tool-result` не принимается."
+        ),
+    )
     editMessageStepId: uuid.UUID | None = Field(
         default=None,
         description=(
@@ -221,13 +242,43 @@ class ChatRunRequest(StrictModel):
         # machine code, not a generic 422 — that is why the field is `str`, not `Literal`).
         if self.dialogMode is not None and not self.dialogMode.strip():
             raise ValueError("dialogMode must be a non-empty string when provided")
-        # ADR-039 §1: message is optional but the turn must carry content. Valid iff message is
-        # non-empty after strip OR at least one attachment is present in the request. A
-        # whitespace-only message with no attachment is also rejected (→ 422). The size limit below
-        # still applies (an empty string trivially passes); a non-empty message is unchanged.
-        if not self.message.strip() and not self.attachments:
-            raise ValueError("message or at least one attachment is required")
         settings = get_settings()
+        # ADR-065 §5 п.0 — NORMATIVE CHECK ORDER for actionPrompt: (1) size-guard on the RAW value,
+        # (2) lenient-drop, (3) temporary-guard, (4) turn-validity rule. Do not reorder.
+        #
+        # (1) Size-guard FIRST, measured on the RAW value (BEFORE strip), exactly like
+        # SIZE_LIMIT_MESSAGE / SIZE_LIMIT_CONTEXT: the byte guard bounds the payload and must not be
+        # bypassable with whitespace. Hence «17 KB of spaces» → "actionPrompt exceeds size limit"
+        # (NOT «empty turn»), and the verdict never depends on invisible characters.
+        if (
+            self.actionPrompt is not None
+            and len(self.actionPrompt.encode("utf-8")) > settings.size_limit_action_prompt
+        ):
+            raise ValueError("actionPrompt exceeds size limit")
+        # (2) Lenient-drop: an actionPrompt that is empty / whitespace-only AFTER strip counts as
+        # ABSENT (symmetric to a whitespace-only message, ADR-039 §3) — it gives the turn no content
+        # and yields no empty text block for the provider. By itself it is NOT a 422. `strip` is
+        # used ONLY for this emptiness decision (and the rule below); the ORIGINAL (unstripped) is
+        # what gets persisted and sent on the wire, so the prompt reaches the model verbatim.
+        has_action_prompt = bool(self.actionPrompt is not None and self.actionPrompt.strip())
+        # (3) Temporary-guard (ADR-065 §5.5/§8.1): in a TEMPORARY chat a non-empty actionPrompt
+        # REQUIRES a non-empty `message`. Reason (by code, not caution): `TemporaryTurn.content` has
+        # min_length=1 and carries only the VISIBLE text, so a «mute» action turn (message="" +
+        # actionPrompt) cannot be represented in the client transcript of the NEXT request — the
+        # client would either skip the turn (then `history` starts with an assistant turn → 422
+        # "history must start with a user turn") or have to show the user the hidden prompt (leak).
+        # Either way the temporary chat becomes uncontinuable → reject on input instead. Runs AFTER
+        # size-guard and lenient-drop (п.0): a whitespace-only actionPrompt is simply dropped and
+        # the rule does not fire. Persistent chats are NOT affected: message="" + actionPrompt stays
+        # VALID there (the turn is stored server-side and replayed from the DB, ADR-065 §5.2).
+        if self.temporary and has_action_prompt and not self.message.strip():
+            raise ValueError("temporary chat with actionPrompt requires a non-empty message")
+        # (4) Turn-validity rule (ADR-065 §5.2, revises ADR-039 §1): the turn is valid iff `message`
+        # is non-empty after strip OR the request carries ≥1 attachment OR `actionPrompt` is
+        # non-empty after strip. Consequence (product requirement): message="" + a non-empty
+        # actionPrompt is a VALID turn — its content is the hidden prompt.
+        if not self.message.strip() and not self.attachments and not has_action_prompt:
+            raise ValueError("message, actionPrompt or at least one attachment is required")
         if len(self.message.encode("utf-8")) > settings.size_limit_message:
             raise ValueError("message exceeds size limit")
         if self.context is not None:

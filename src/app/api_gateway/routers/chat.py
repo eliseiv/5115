@@ -377,6 +377,9 @@ async def chat_run(
         # ADR-037: per-message conversation settings (allowlist + render → injected into the turn-0
         # user message inside orchestrator.run; not session-fixed, not stored).
         context=body.context,
+        # ADR-065: per-message hidden action prompt — goes to the model in this turn's user content
+        # (synthesized in _build_messages), never shown to the user. Not session-fixed, not echoed.
+        action_prompt=body.actionPrompt,
         # ADR-040: edit+regenerate — truncate history from this turn and generate a new one.
         edit_message_step_id=body.editMessageStepId,
         # ADR-056: temporary chat — nothing is persisted; the client supplies the transcript in

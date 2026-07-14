@@ -227,14 +227,22 @@ def test_compose_turn0_text_matrix(block: str | None, msg: str, expected: str) -
 # ===================== §1: schema-level validator message (exact text) =====================
 @pytest.mark.parametrize("message", ["", "   ", "\n\t "])
 def test_schema_rejects_empty_message_without_attachments(message: str) -> None:
-    """At the schema layer the validator raises the exact ADR-039 §1 ValueError. The HTTP layer
-    redacts this into a generic envelope (asserted as 422 in the integration tests above), so the
-    precise message is verified here against the model directly."""
+    """At the schema layer the validator raises the exact ValueError. The HTTP layer redacts this
+    into a generic envelope (asserted as 422 in the integration tests above), so the precise message
+    is verified here against the model directly.
+
+    ADR-065 §5.2 REVISES the ADR-039 §1 rule and its text: the turn is now valid iff `message` is
+    non-empty OR ≥1 attachment OR a non-empty `actionPrompt`, so the error names all three sources
+    ("message, actionPrompt or at least one attachment is required"). The rule asserted here — an
+    empty/whitespace-only message with no attachment and no actionPrompt is rejected — is unchanged.
+    """
     import pydantic
 
     from app.schemas.chat import ChatRunRequest
 
-    with pytest.raises(pydantic.ValidationError, match="message or at least one attachment"):
+    with pytest.raises(
+        pydantic.ValidationError, match="message, actionPrompt or at least one attachment"
+    ):
         ChatRunRequest.model_validate(
             {"userId": str(uuid.uuid4()), "message": message, "mode": "credits"}
         )

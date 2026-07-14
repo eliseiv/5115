@@ -181,6 +181,8 @@ class ChatsService:
         ``chat_steps.payload`` MUST stay wire-valid for Anthropic replay (underscore tool names,
         provider ``toolu_...`` ids) and is never mutated here. On the copy:
         - ``providerToolUseId`` (internal, ADR-008) is dropped from the (tool) step payload;
+        - ``actionPrompt`` (hidden per-turn action prompt, ADR-065 §3) is dropped from the (user)
+          step payload — it is model-facing only and must never reach the user;
         - ``tool_use`` blocks: ``name`` underscore→dot via ``to_domain_tool_name``; ``id``
           (``toolu_...``) → domain ``tool_calls.id`` via the session map;
         - ``tool_result`` blocks: ``tool_use_id`` (``toolu_...``) → the same domain id;
@@ -192,6 +194,13 @@ class ChatsService:
         payload = copy.deepcopy(step.payload)
         # ADR-008: never expose the raw provider id stored on tool steps.
         payload.pop("providerToolUseId", None)
+        # ADR-065 §3: never expose the hidden action prompt of a user step. It lives OUTSIDE
+        # `content[]` (its own top-level key), so every other user-facing projection (preview,
+        # steps-view, search) misses it by construction; this endpoint returns the payload WHOLE and
+        # is therefore the single explicit measure. Dropped from the deep copy only — the stored
+        # payload must keep the key so _build_messages replays the prompt to the model. No-op for
+        # steps without the key (old rows, prompt-less turns).
+        payload.pop("actionPrompt", None)
         content = payload.get("content")
         if not isinstance(content, list):
             return payload

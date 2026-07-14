@@ -339,6 +339,14 @@ class Settings(BaseSettings):
     size_limit_body: int = Field(default=512 * 1024, alias="SIZE_LIMIT_BODY")
     size_limit_message: int = Field(default=32 * 1024, alias="SIZE_LIMIT_MESSAGE")
     size_limit_context: int = Field(default=64 * 1024, alias="SIZE_LIMIT_CONTEXT")
+    # ADR-065 §6: byte ceiling of ChatRunRequest.actionPrompt — the action prompt hidden from the
+    # user and DELIVERED per-message (per-message = delivery only; its influence is NOT limited to
+    # one turn: in a persistent chat the text is part of that turn's content and is replayed to the
+    # model on all subsequent turns, ADR-065 §1.1).
+    # Measured on the RAW value (before strip), like SIZE_LIMIT_MESSAGE/SIZE_LIMIT_CONTEXT →
+    # whitespace never bypasses the guard. Deliberately half of SIZE_LIMIT_MESSAGE (32 KB): the
+    # hidden channel must not become the main input channel.
+    size_limit_action_prompt: int = Field(default=16 * 1024, alias="SIZE_LIMIT_ACTION_PROMPT")
     size_limit_tool_result: int = Field(default=256 * 1024, alias="SIZE_LIMIT_TOOL_RESULT")
     size_limit_api_key: int = Field(default=4 * 1024, alias="SIZE_LIMIT_API_KEY")
 

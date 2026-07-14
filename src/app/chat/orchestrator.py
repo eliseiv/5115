@@ -571,11 +571,20 @@ class ChatOrchestrator:
         model: str | None = None,
         workspace_project_id: uuid.UUID | None = None,
         context: dict[str, Any] | None = None,
+        action_prompt: str | None = None,
         edit_message_step_id: uuid.UUID | None = None,
         temporary: bool = False,
         history: list[TemporaryTurn] | None = None,
     ) -> ChatRunOut:
         message_step_id = uuid.uuid4()  # CO-4b: billing key for this user message-step
+        # ADR-065 §5.1: lenient-drop — an empty / whitespace-only actionPrompt counts as ABSENT (no
+        # payload key, no hidden block, no empty text block for the provider). The size-guard
+        # already ran in the schema on the RAW value (§5 п.0). The value kept here is the ORIGINAL,
+        # NOT the stripped one: persist and wire must carry the prompt verbatim. Its CONTENT is
+        # never logged (§9) — not in orchestrator logs, not in the audit payload, not in errors.
+        resolved_action_prompt = (
+            action_prompt if action_prompt is not None and action_prompt.strip() else None
+        )
         # ADR-056: a temporary chat persists NOTHING. Swap the repo to an in-memory implementation
         # BEFORE any repo use (get_or_create_session / add_step below) so no chat-* row is written;
         # the invariant «only ChatRepository writes chat-* tables» (ADR-021) holds because the
@@ -756,12 +765,25 @@ class ChatOrchestrator:
         # placeholder; workspace files are re-assembled from workspace_files, never persisted here.
         first_turn = _merge_attachments(prepared, workspace_attachments)
 
+        # ADR-065 §3,§4,§7: the hidden action prompt is persisted OUTSIDE `content[]`, as a
+        # top-level key of the user step (structural hiding — no marker/regex, so it can be neither
+        # spoofed via `message` nor leaked by a failed anchor). `content` stays exactly [visible
+        # text?, placeholders…] — every user-facing projection reads only `content[]` and cannot
+        # see the prompt by construction; the history endpoint, which returns the payload whole,
+        # drops the key in ChatsService._normalize_payload. The model-facing wire block is
+        # SYNTHESIZED in _build_messages (single point serving the live turn, replay, continuation
+        # and the temporary chat). The key is added ONLY when the prompt is non-empty, so old steps
+        # and prompt-less turns are byte-identical to before (backward compatibility, §10).
+        user_payload: dict[str, Any] = {"content": user_payload_content}
+        if resolved_action_prompt is not None:
+            user_payload["actionPrompt"] = resolved_action_prompt
+
         # Persist the user message under this step (placeholders only — no base64, ADR-020 §3).
         await self._deps.repo.add_step(
             session_id=sess.id,
             message_step_id=message_step_id,
             role="user",
-            payload={"content": user_payload_content},
+            payload=user_payload,
         )
 
         decision, state = await self._evaluate(user_id, effective_mode, sess.id)
@@ -1122,13 +1144,45 @@ class ChatOrchestrator:
         content blocks of the active provider from ``payload``; a tool step carries the domain
         tool-result record (incl. the raw ``providerToolUseId`` — ADR-008/BUG-4 — used to align
         tool_use ↔ tool_result on replay, never a domain UUID).
+
+        ADR-065 §3,§4: for a user step carrying a non-empty ``payload["actionPrompt"]`` (the action
+        prompt hidden from the user, DELIVERED per-message and stored OUTSIDE ``content[]``), the
+        model-facing text block is SYNTHESIZED here and APPENDED at the END of that turn's content
+        — the single synthesis point, so the live turn, replay, continuation and the temporary chat
+        hand the model identical content. NOTE (ADR-065 §1.1, replay-fidelity): "per-message" is
+        the DELIVERY semantics only — the prompt's influence is NOT limited to one turn. Because
+        this method rebuilds the history from ALL steps of the session, the hidden block of a past
+        user step is re-synthesized on EVERY subsequent turn, i.e. the model keeps seeing it. That
+        is intended (the model must see the same context in which its earlier answer was produced);
+        there is NO suppression mechanism. Only the temporary chat differs (ADR-056): its history
+        comes from the client transcript, which carries no hidden prompts, so a temporary-chat
+        prompt affects just the turn it was sent on.
+
+        NON-MUTATION / IDEMPOTENCE INVARIANT (ADR-065 §3 — correctness, not style): the blocks are
+        assembled into a NEW list; ``payload["content"].append(...)`` / ``+=`` and any other
+        mutation are FORBIDDEN. ``content_blocks`` is passed BY REFERENCE to the list in the step
+        (SQLAlchemy identity map; in a temporary chat literally the same objects held by
+        ``EphemeralChatRepository._steps``), and ``_build_messages`` runs on EVERY round of the
+        tool-loop (``for _ in range(max_rounds + 1)``) — a mutating implementation would duplicate
+        the hidden block in the wire content on each continuation round (2, 3, … copies of one
+        instruction) and corrupt the stored step. However many times this runs, the wire content of
+        the user turn holds EXACTLY ONE hidden block and the stored payload stays byte-for-byte
+        unchanged. Same copy pattern as ``anthropic_client.py``
+        (``wm["content"] = [*base, *attachments.content_blocks]``).
         """
         steps = await self._deps.repo.list_steps(session_id)
         messages: list[NeutralMessage] = []
         for step in steps:
             payload = step.payload
             if step.role == "user":
-                messages.append(NeutralMessage(role="user", content_blocks=payload["content"]))
+                # ADR-065 §3: NEW list — never mutate payload["content"] (see the invariant above).
+                action_prompt = payload.get("actionPrompt")
+                user_blocks: list[dict[str, Any]] = (
+                    [*payload["content"], {"type": "text", "text": action_prompt}]
+                    if action_prompt
+                    else payload["content"]
+                )
+                messages.append(NeutralMessage(role="user", content_blocks=user_blocks))
             elif step.role == "assistant":
                 messages.append(NeutralMessage(role="assistant", content_blocks=payload["content"]))
             elif step.role == "tool":
