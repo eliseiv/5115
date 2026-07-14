@@ -266,9 +266,16 @@ class WorkspacesService:
             remaining = max_chars - used
             snippet = text[:remaining]
             used += len(snippet)
-            content_blocks.append(
-                {"type": "text", "text": f"[Файл проекта: {f.filename}]\n{snippet}"}
-            )
+            label = f"[Файл проекта: {f.filename}]\n{snippet}"
+            # SSOT for the Responses wire format of these blocks: attachments.py
+            # `_openai_content_block` (input_text / input_image + flat image_url + detail). OpenAI
+            # workspace blocks are injected VERBATIM by openai_client `_inject_attachments` (no
+            # `{type:text}`→`input_text` normalization, unlike `_user_item_from_blocks`), so they
+            # MUST already be Responses parts. Anthropic keeps `{type:text}` (ADR-059 §6).
+            if provider == "openai":
+                content_blocks.append({"type": "input_text", "text": label})
+            else:
+                content_blocks.append({"type": "text", "text": label})
         if not content_blocks:
             return None
         # placeholders are unused for workspace files (we never persist these as a user step — the
@@ -285,9 +292,14 @@ class WorkspacesService:
         """
         data = base64.b64encode(f.content).decode("ascii")
         if provider == "openai":
+            # SSOT for this Responses block shape: attachments.py `_openai_content_block`
+            # (input_image + FLAT `image_url` data-URI + `detail`). Injected VERBATIM by
+            # openai_client `_inject_attachments` — no normalization, so it must already be a
+            # Responses part (ADR-059 §6).
             return {
-                "type": "image_url",
-                "image_url": {"url": f"data:{f.media_type};base64,{data}"},
+                "type": "input_image",
+                "image_url": f"data:{f.media_type};base64,{data}",
+                "detail": "auto",
             }
         return {
             "type": "image",

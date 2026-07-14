@@ -244,6 +244,9 @@ def test_context_images_not_counted_against_char_budget() -> None:
 
 
 def test_context_image_block_provider_agnostic() -> None:
+    # Prod-bug fix: the OpenAI branch must emit a Responses `input_image` part with a FLAT
+    # `image_url` data-URI string + `detail`, NOT the old Chat Completions `{type:image_url,
+    # image_url:{url:...}}` (which the Responses API rejected with 400 → 502 upstream_error).
     svc = _svc()
     files = [_wf(media_type="image/png", extracted_text=None, content=_PNG)]
 
@@ -255,20 +258,25 @@ def test_context_image_block_provider_agnostic() -> None:
     openai = svc._build_file_attachments(files, "openai")
     assert openai is not None
     block = openai.content_blocks[0]
-    assert block["type"] == "image_url"
-    assert str(block["image_url"]["url"]).startswith("data:image/png;base64,")
+    assert block["type"] == "input_image"
+    # image_url is a PLAIN string data-URI, NOT a nested {"url": ...} object.
+    assert isinstance(block["image_url"], str)
+    assert str(block["image_url"]).startswith("data:image/png;base64,")
+    assert block["detail"] == "auto"
 
 
 def test_context_pdf_extracted_text_injected_as_text_both_providers() -> None:
     # A workspace PDF carries extracted_text → it is injected as a TEXT block (not native PDF),
-    # so the OpenAI PDF→422 rule (TD-023) does NOT apply to workspace files.
+    # so the OpenAI PDF→422 rule (TD-023) does NOT apply to workspace files. Prod-bug fix: the
+    # OpenAI text part is `input_text` (Responses), Anthropic keeps `text` (ADR-059 §6).
     svc = _svc()
     files = [_wf(media_type="application/pdf", extracted_text="page text", content=b"%PDF-")]
+    expected_type = {"anthropic": "text", "openai": "input_text"}
     for provider in ("anthropic", "openai"):
         prepared = svc._build_file_attachments(files, provider)
         assert prepared is not None, provider
         block = prepared.content_blocks[0]
-        assert block["type"] == "text"
+        assert block["type"] == expected_type[provider], provider
         assert "page text" in str(block["text"])
         assert "[Файл проекта: doc.txt]" in str(block["text"])
 
@@ -279,3 +287,96 @@ def test_context_no_injectable_files_returns_none() -> None:
     assert svc._build_file_attachments([], "anthropic") is None
     files = [_wf(media_type="text/plain", extracted_text="")]
     assert svc._build_file_attachments(files, "anthropic") is None
+
+
+# ============================================================================
+# 6. Prod-bug fix (workspace knowledge-file injection wire format, ADR-059 §6)
+#    OpenAI blocks MUST be Responses parts (input_text / input_image + flat
+#    image_url + detail), NOT Chat Completions parts (which returned 400 → 502).
+# ============================================================================
+def test_build_file_attachments_openai_text_is_input_text() -> None:
+    # Scenario 1: a text WorkspaceFile on provider="openai" yields an `input_text` part,
+    # NOT the old `{type:"text"}` (rejected by the Responses API).
+    svc = _svc()
+    files = [_wf(media_type="text/plain", extracted_text="hello workspace")]
+    prepared = svc._build_file_attachments(files, "openai")
+    assert prepared is not None
+    block = prepared.content_blocks[0]
+    assert block["type"] == "input_text"
+    assert block["type"] != "text"
+    assert "hello workspace" in str(block["text"])
+    assert str(block["text"]).startswith("[Файл проекта: doc.txt]\n")
+
+
+def test_image_block_openai_is_responses_input_image() -> None:
+    # Scenario 2: `_image_block` on provider="openai" builds `input_image` with a FLAT string
+    # image_url (data:...) and detail=="auto"; NO Chat Completions `{type:"image_url"}` and NO
+    # nested `{url: ...}` object.
+    f = _wf(media_type="image/png", extracted_text=None, content=_PNG)
+    block = WorkspacesService._image_block(f, "openai")
+    assert block is not None
+    assert block["type"] == "input_image"
+    assert block["type"] != "image_url"  # not the old Chat Completions shape
+    assert isinstance(block["image_url"], str)  # flat string, not {"url": ...}
+    assert str(block["image_url"]).startswith("data:image/png;base64,")
+    assert block.get("detail") == "auto"
+
+
+def test_build_file_attachments_anthropic_unchanged() -> None:
+    # Scenario 3: provider="anthropic" is a regression check — text stays `{type:"text"}` and
+    # images stay the native `{type:"image", source:{...}}` block (fix must not touch Anthropic).
+    svc = _svc()
+    files = [
+        _wf(media_type="text/plain", extracted_text="doc body"),
+        _wf(media_type="image/png", extracted_text=None, content=_PNG),
+    ]
+    prepared = svc._build_file_attachments(files, "anthropic")
+    assert prepared is not None
+    text_block, image_block = prepared.content_blocks
+    assert text_block["type"] == "text"
+    assert "doc body" in str(text_block["text"])
+    assert image_block["type"] == "image"
+    assert image_block["source"]["type"] == "base64"
+    assert image_block["source"]["media_type"] == "image/png"
+    assert isinstance(image_block["source"]["data"], str)
+
+
+def test_openai_workspace_blocks_match_attachments_reference_shape() -> None:
+    # Scenario 4: the OpenAI workspace blocks match, key-for-key, the SSOT reference shape built by
+    # attachments.py `_openai_content_block` (input_text keys / input_image + flat image_url +
+    # detail). Guards against future drift between the two OpenAI content-block builders.
+    from app.chat.attachments import _openai_content_block
+    from app.schemas.chat import AttachmentIn
+
+    svc = _svc()
+
+    # --- image parity ---------------------------------------------------------------------
+    ws_image = WorkspacesService._image_block(
+        _wf(media_type="image/png", extracted_text=None, content=_PNG), "openai"
+    )
+    assert ws_image is not None
+    ref_image = _openai_content_block(
+        AttachmentIn(type="image", mediaType="image/png", filename="x.png", data=_b64(_PNG)),
+        _PNG,
+        None,
+    )
+    # Same key set and same non-payload shape (type / flat image_url string / detail).
+    assert set(ws_image.keys()) == set(ref_image.keys()) == {"type", "image_url", "detail"}
+    assert ws_image["type"] == ref_image["type"] == "input_image"
+    assert isinstance(ws_image["image_url"], str) and isinstance(ref_image["image_url"], str)
+    assert str(ws_image["image_url"]).startswith("data:image/png;base64,")
+    assert str(ref_image["image_url"]).startswith("data:image/png;base64,")
+    assert ws_image["detail"] == ref_image["detail"] == "auto"
+
+    # --- text parity (part type) ----------------------------------------------------------
+    ws_text = svc._build_file_attachments(
+        [_wf(media_type="text/plain", extracted_text="body")], "openai"
+    )
+    assert ws_text is not None
+    ref_text = _openai_content_block(
+        AttachmentIn(type="text", mediaType="text/plain", filename="x.txt", data=_b64(b"body")),
+        b"body",
+        "body",
+    )
+    assert ws_text.content_blocks[0]["type"] == ref_text["type"] == "input_text"
+    assert set(ws_text.content_blocks[0].keys()) == set(ref_text.keys()) == {"type", "text"}
