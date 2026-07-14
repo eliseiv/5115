@@ -300,8 +300,9 @@ def _merge_attachments(
 
     Both are injected into the last user turn on the first call only. Workspace context blocks are
     placed BEFORE the request attachments (project context first). placeholders come only from the
-    request attachments (workspace files are never persisted as user-step placeholders — they are
-    re-assembled from workspace_files on a new session's first turn).
+    request attachments (workspace files are never persisted as user-step placeholders — ADR-064,
+    they are re-assembled from the current workspace_files on the first LLM call of every generation
+    request).
     """
     if chat is None and workspace is None:
         return None
@@ -677,8 +678,9 @@ class ChatOrchestrator:
         # row is rolled back with the request (the AppError propagates → db.session_scope rollback;
         # commit happens only on success). Truncation is scoped by `sess.id` — the resumed, owned
         # session — so a foreign chat can never be truncated. The new turn then proceeds normally:
-        # the freshly generated message_step_id (above) yields a new debit (CO-7); on resume
-        # (is_new=False) workspace files are NOT re-injected (turn-0-only, ADR-040 §4а).
+        # the freshly generated message_step_id (above) yields a new debit (CO-7); workspace files
+        # and instructions ARE re-injected below on every turn incl. this post-edit resume (ADR-064
+        # §6, Q-040-3 closed — supersedes the ADR-040 §4а turn-0-only note).
         if edit_message_step_id is not None:
             if ctx.is_new:
                 raise MessageNotFoundError("message_not_found")
@@ -688,35 +690,31 @@ class ChatOrchestrator:
             if deleted is None:
                 raise MessageNotFoundError("message_not_found")
 
-        # ADR-036 §3/§6 + ADR-038 §3: workspace `instructions` live in the `system` param (NOT in
-        # history) and MUST be injected on EVERY turn of a session with a workspace — decoupled
-        # from `ctx.is_new` so that a chat MOVED into a workspace later (PATCH, ADR-038) also gets
-        # the project instructions from its next message. Knowledge FILES stay turn-0-only (ADR-038
-        # §3.2, variant a): they are heavy user-content, persisted as history content blocks on
-        # turn 0 and replayed automatically; NOT re-injected retroactively for a moved chat
-        # (Q-038-1).
-        #   - turn 0 (new session): assemble (instructions + files) via context_for_session;
-        #   - resume/next turn (not is_new): read ONLY instructions via instructions_for_session
-        #     (light single-column) — files are NOT collected (context_for_session is not called).
-        # For a non-workspace chat the system prompt is unchanged (base) → no double-injection and
-        # the provider prompt cache stays intact.
+        # ADR-064 (revises ADR-036 §3/§6, ADR-038 §3.2): workspace `instructions` AND knowledge
+        # FILES are LIVE per-turn context — assembled via context_for_session and injected into the
+        # FIRST LLM call of EVERY generation request of a session with a workspace, decoupled from
+        # `ctx.is_new` and symmetric with `instructions`. This fixes the prod bug where files were
+        # visible only on turn 0 (the model lost the knowledge base on every later turn). Files are
+        # NOT persisted (neither raw base64 — ADR-020 — nor as text `[Файл проекта:]` blocks that
+        # would leak into user-facing history — ADR-042); they are re-assembled from the CURRENT
+        # workspace_files on each turn and ride the live first request only (see
+        # _merge_attachments / first_turn_attachments below). A chat MOVED into a workspace later
+        # (PATCH, ADR-038) or an edited first message (ADR-040 §4а) therefore also gets instructions
+        # AND files from its next message (Q-038-1 / Q-040-3 closed, ADR-064 §6). A None from
+        # context_for_session (deleted/foreign workspace) or empty attachments (no files) → base
+        # system prompt, no files (graceful). For a non-workspace chat the system prompt is
+        # unchanged (base) → no double-injection and the provider prompt cache stays intact.
         workspace_attachments: PreparedAttachments | None = None
         system_prompt = _system_prompt_for(sess.assistant_mode)
         if sess.workspace_project_id is not None:
-            if ctx.is_new:
-                ws_context = await self._deps.workspaces.context_for_session(
-                    sess.workspace_project_id, user_id, provider=_active_provider()
+            ws_context = await self._deps.workspaces.context_for_session(
+                sess.workspace_project_id, user_id, provider=_active_provider()
+            )
+            if ws_context is not None:
+                system_prompt = _system_prompt_with_workspace(
+                    sess.assistant_mode, ws_context.instructions
                 )
-                if ws_context is not None:
-                    system_prompt = _system_prompt_with_workspace(
-                        sess.assistant_mode, ws_context.instructions
-                    )
-                    workspace_attachments = ws_context.attachments
-            else:
-                instructions = await self._deps.workspaces.instructions_for_session(
-                    sess.workspace_project_id, user_id
-                )
-                system_prompt = _system_prompt_with_workspace(sess.assistant_mode, instructions)
+                workspace_attachments = ws_context.attachments
         # ADR-055 §5: append the dialog-mode suffix AFTER the base assistant_mode prompt and any
         # workspace instructions (composition order preserved). No-op for smart/deep_thinking.
         system_prompt = _system_prompt_with_dialog_mode(system_prompt, sess.dialog_mode)
@@ -896,18 +894,27 @@ class ChatOrchestrator:
             return self._blocked(session_id, decision.block_reason)
 
         api_key, byok_provider = await self._resolve_api_key(user_id, mode)
-        # ADR-036 §3: knowledge files are already replayed as content blocks in the history, but
-        # `instructions` live in the `system` param (NOT in history) and are sent on EVERY LLM call.
-        # So on each continuation re-inject the workspace instructions into system via the SAME
-        # helper used on turn 0 (identical behavior). Read ONLY instructions (light single-column);
-        # do NOT re-inject knowledge files. Empty/missing instructions or a deleted workspace → base
-        # system prompt unchanged (graceful).
+        # ADR-064: re-inject BOTH the workspace `instructions` (into `system`) AND the knowledge
+        # FILES (into the FIRST continuation LLM call) via context_for_session — the SAME live
+        # per-turn assembly used by run(). Knowledge files are NOT in the replayed history (never
+        # persisted), so this first `/chat/tool-result` continuation is the point that carries them
+        # into the request; they ride first_turn_attachments and are consumed after the first call
+        # (turn0_attachments reset, ~1257 — cost parity, not repeated on internal server-tool
+        # rounds). A None from context_for_session (deleted/foreign workspace) or a workspace with
+        # no injectable files (attachments None) → base/instructions-only system prompt, no files
+        # (graceful — _merge_attachments(None, None) is None). DB infrastructure errors propagate as
+        # usual (not swallowed).
         system_prompt = _system_prompt_for(sess.assistant_mode)
+        continuation_attachments: PreparedAttachments | None = None
         if sess.workspace_project_id is not None:
-            instructions = await self._deps.workspaces.instructions_for_session(
-                sess.workspace_project_id, user_id
+            ws_context = await self._deps.workspaces.context_for_session(
+                sess.workspace_project_id, user_id, provider=_active_provider()
             )
-            system_prompt = _system_prompt_with_workspace(sess.assistant_mode, instructions)
+            if ws_context is not None:
+                system_prompt = _system_prompt_with_workspace(
+                    sess.assistant_mode, ws_context.instructions
+                )
+                continuation_attachments = _merge_attachments(None, ws_context.attachments)
         # ADR-055 §5: re-append the dialog-mode suffix on every continuation (same helper as run),
         # AFTER base + workspace instructions — the system prompt is rebuilt each LLM call.
         system_prompt = _system_prompt_with_dialog_mode(system_prompt, sess.dialog_mode)
@@ -922,6 +929,9 @@ class ChatOrchestrator:
             system_prompt=system_prompt,
             # ADR-022 axis A: project_id is session-fixed; gate site.* by the session's project.
             has_project=sess.project_id is not None,
+            # ADR-064: workspace knowledge files ride the FIRST continuation LLM call (never in the
+            # replayed history). None for a non-workspace / deleted-workspace / file-less turn.
+            first_turn_attachments=continuation_attachments,
             # ADR-034 §4 / ADR-044: session-fixed model; effective model resolved in _generate_loop
             # against the right provider's allowlist (credits → active, byok → key provider).
             model=sess.model or None,

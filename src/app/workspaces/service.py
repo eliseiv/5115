@@ -200,26 +200,17 @@ class WorkspacesService:
         """True when the workspace exists and belongs to the user (ADR-036 §3 binding check)."""
         return await self._repo.get_workspace(workspace_id, user_id) is not None
 
-    async def instructions_for_session(
-        self, workspace_id: uuid.UUID, user_id: uuid.UUID
-    ) -> str | None:
-        """Read ONLY the workspace instructions for a continuation turn (ADR-036 §3).
-
-        Unlike ``context_for_session`` (turn 0, assembles instructions + knowledge files), this is a
-        light single-column read used on EVERY ``/chat/tool-result`` continuation: knowledge files
-        are already persisted as content blocks in the message history, but ``instructions`` live in
-        the ``system`` param (NOT in history) and must be re-injected on each LLM call. Returns None
-        when the workspace was deleted/foreign or its instructions are empty (→ base system prompt).
-        """
-        instructions = await self._repo.get_instructions(workspace_id, user_id)
-        return instructions or None
-
     # ---- context assembly (orchestrator) ----
 
     async def context_for_session(
         self, workspace_id: uuid.UUID, user_id: uuid.UUID, *, provider: str
     ) -> WorkspaceContext | None:
-        """Assemble (instructions, files) context for a workspace chat's first turn (ADR-036 §3/§6).
+        """Assemble the (instructions, files) context for a workspace chat (ADR-036 §3/§6, ADR-064).
+
+        ADR-064: this is the SINGLE context-assembly point, called for the FIRST LLM call of EVERY
+        generation request of a workspace session (turn 0, `/chat/run` resume, and the first
+        `/chat/tool-result` continuation) — instructions AND knowledge files are live per-turn
+        context, not turn-0-only (the former light-weight ``instructions_for_session`` is removed).
 
         Returns None when the workspace no longer exists or is foreign (the session keeps working as
         a plain chat — defensive; the binding was validated at session creation). Otherwise returns

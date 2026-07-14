@@ -6,6 +6,7 @@
 - Частично супершедит проектные решения прежнего модуля `workspaces` (Спринт 2): **стратегию хранения файлов-знаний** (см. §4) и **зависимость от отложенного модуля `attachments`** ([TD-015](../100-known-tech-debt.md)).
 - Связан с: [ADR-012](ADR-012-assistant-mode-vs-billing-mode.md) (base assistant_mode prompt), [ADR-020](ADR-020-inline-base64-attachments-mvp.md) (inline-base64, извлечение текста), [ADR-033](ADR-033-llm-provider-abstraction.md) (провайдер-агностичная подача), [ADR-006](ADR-006-credit-billing-and-subscription-grant.md) (биллинг), [ADR-010](ADR-010-backend-hosted-preview.md)/[TD-009](../100-known-tech-debt.md) (BYTEA-хранение как у `site_files`), [Q-013-1](../99-open-questions.md) (RAG отложено).
 - Поставка 3 (крупнейшая), 2 под-фазы: **3A — ядро**, **3B — файлы-знания**.
+- **⚠️ Ревизия 2026-07-14 (подача ФАЙЛОВ-знаний → [ADR-064](ADR-064-workspace-files-live-reinjection.md)):** §3/§6 заявляют, что файлы-знания «сохранены как content-блоки истории после turn 0 и реплеятся автоматически» — по коду это **никогда не было реализовано** (персист-и-реплей файлов отсутствует; прод-баг «файлы видны только на turn 0»). Актуальное решение — **живая переинъекция файлов на каждом ходе, без персиста** ([ADR-064](ADR-064-workspace-files-live-reinjection.md)). Инъекция `instructions` (§3) **не изменена**. Тело §3/§6 не переписано (immutability).
 
 ## Context
 

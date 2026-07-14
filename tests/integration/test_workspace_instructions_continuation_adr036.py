@@ -172,21 +172,23 @@ async def test_continuation_plain_chat_uses_base_system(
 
 
 # ---------------------------------------------------------------------------
-# Knowledge files are NOT re-injected on continuation (already in history)
+# ADR-064: knowledge files ARE re-injected on the first continuation call
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_knowledge_files_not_reinjected_on_continuation(
+async def test_knowledge_files_reinjected_on_continuation_adr064(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
 ) -> None:
-    """Workspace knowledge files appear on turn 0 only; the continuation does not re-inject them.
+    """Workspace knowledge files ride the FIRST /chat/tool-result continuation call (ADR-064).
 
-    ADR-036 §6: knowledge files are assembled into the turn-0 attachments (injected into the last
-    user turn by the client) and are NEVER persisted as user-step placeholders. So on continuation
-    the replayed history carries no knowledge content, and the fix does NOT re-assemble it: the blob
-    appears on turn 0 only, and is absent (0 occurrences) on the continuation call. This is the
-    desired contract — «На continuation tool-loop повторно не подаётся».
+    ADR-064 supersedes the former ADR-036 §6 «files turn-0 only» behaviour: knowledge files are
+    LIVE per-turn context, never persisted, re-assembled via `context_for_session` and injected into
+    the first LLM call of EVERY generation request — including the continuation that closes a
+    client-side tool round. Here there is exactly ONE continuation call (calls[-1]); it must carry
+    the knowledge blob exactly once (the pre-ADR-064 bug dropped it — the model lost the knowledge
+    base after turn 0). The dedicated ADR-064 suite additionally proves it is NOT repeated on the
+    internal server-tool rounds of the same request.
     """
     import base64
 
@@ -212,8 +214,7 @@ async def test_knowledge_files_not_reinjected_on_continuation(
     turn0_blob = str(fake_anthropic.calls[0]["messages"])
     assert turn0_blob.count(blob) == 1
 
-    # On continuation the knowledge text is NOT re-injected: workspace files are never persisted to
-    # history (only re-assembled on a NEW session's turn 0), and the fix re-injects ONLY the
-    # instructions (system param), not knowledge files. So the blob is absent from the continuation.
+    # ADR-064: the continuation RE-INJECTS the knowledge files (live per-turn context) — the blob is
+    # present on the continuation call exactly once (was 0 before the fix — the regression).
     continuation_blob = str(fake_anthropic.calls[-1]["messages"])
-    assert continuation_blob.count(blob) == 0
+    assert continuation_blob.count(blob) == 1

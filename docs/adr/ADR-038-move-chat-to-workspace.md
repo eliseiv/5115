@@ -5,6 +5,7 @@
 - Расширяет / уточняет: [ADR-036](ADR-036-workspaces-implementation.md) (Workspaces — реализация). Делает `chat_sessions.workspace_project_id` **явно изменяемым** через новый эндпоинт и меняет условие инъекции workspace-контекста в orchestrator.
 - Связан с: [ADR-013](ADR-013-workspace-projects-vs-website-builder.md) (концепция workspace ≠ website-builder), [ADR-012](ADR-012-assistant-mode-vs-billing-mode.md) (base assistant_mode prompt), [ADR-033](ADR-033-llm-provider-abstraction.md) (провайдер-агностичная подача), [ADR-006](ADR-006-credit-billing-and-subscription-grant.md) (биллинг неизменен), [ADR-020](ADR-020-inline-base64-attachments-mvp.md)/[ADR-024](ADR-024-history-payload-domain-normalization.md) (история/реплей).
 - Без миграции БД (колонка `chat_sessions.workspace_project_id` уже добавлена миграцией `0011`, [ADR-036 §2](ADR-036-workspaces-implementation.md)).
+- **⚠️ Ревизия 2026-07-14 (файлы-знания перенесённому чату → [ADR-064](ADR-064-workspace-files-live-reinjection.md)):** §3.2 (вариант a — файлы turn-0-only, не подаются перенесённому чату) и строка «files, resume/continuation → нет» таблицы §3.3 **суперсид**: файлы-знания теперь переинъектируются на каждом ходе (живой контекст, без персиста) и **применяются к перенесённому чату** со следующего сообщения ([ADR-064](ADR-064-workspace-files-live-reinjection.md), закрывает [Q-038-1](../99-open-questions.md) в пользу варианта b). Решение по `instructions` (§3.1) — **без изменений**. Тело §3.2/§3.3 не переписано (immutability).
 
 ## Context
 

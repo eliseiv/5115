@@ -15,7 +15,8 @@ ADR-038 contract under test:
 - Owner isolation: a foreign/missing CHAT → 404 (checked BEFORE the workspace ownership check).
 - Orchestrator: a session bound to a workspace re-injects `workspace.instructions` into `system` on
   EVERY turn — including a NON-turn-0 run on a chat MOVED into the workspace later. Knowledge FILES
-  stay turn-0-only (variant a): a moved chat does NOT retroactively get the files.
+  are ALSO re-injected on every turn (ADR-064 §6 supersedes ADR-038 §3.2 variant a, closes
+  Q-038-1): a moved chat retroactively gets the files from its next message.
 - A plain (non-workspace) chat: system prompt is the base prompt, no (double) injection.
 
 Covers follow_up_for_qa cases 1–9.
@@ -344,12 +345,16 @@ async def test_native_workspace_chat_has_instructions_and_files(
 
 
 @pytest.mark.asyncio
-async def test_moved_chat_gets_instructions_but_not_files_retroactively(
+async def test_moved_chat_gets_instructions_and_files_retroactively_adr064(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
 ) -> None:
-    """A moved chat gets instructions on the next turn, but NOT the files (variant a)."""
+    """A moved chat gets BOTH instructions and files on the next turn (ADR-064 §6 closes Q-038-1).
+
+    ADR-064 supersedes ADR-038 §3.2 variant a: since file injection is decoupled from ctx.is_new,
+    a chat moved into a workspace via PATCH gets the knowledge files from its next message (var b).
+    """
     async with db_sessionmaker() as s:
         uid = await seed_user(s, subscription="active", balance=5)
     w = await _create_workspace(client, uid, name="X", instructions=_INSTRUCTIONS)
@@ -363,10 +368,10 @@ async def test_moved_chat_gets_instructions_but_not_files_retroactively(
     code, _ = await _patch(client, uid, sid, workspaceProjectId=str(w["id"]))
     assert code == 200
 
-    # next turn: instructions injected (system), but knowledge files are NOT re-assembled (Q-038-1).
+    # next turn: instructions injected (system) AND knowledge files re-assembled (ADR-064, Q-038-1).
     await _run(client, uid, fake_anthropic, message="second", session_id=sid)
     assert _INSTRUCTIONS in _last_system(fake_anthropic)
-    assert _KNOWLEDGE_BLOB not in str(fake_anthropic.calls[-1]["messages"])
+    assert _KNOWLEDGE_BLOB in str(fake_anthropic.calls[-1]["messages"])
 
 
 # --------------------------------------------------------------------------------------------------

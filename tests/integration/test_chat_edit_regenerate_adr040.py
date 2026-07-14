@@ -17,7 +17,7 @@ ADR-040 contract under test (POST /v1/chat/run + new optional field `editMessage
 - §1/§4в: 404 message_not_found when the message_step_id has no user-step (non-existent in the
   session, or it points only at an assistant/tool step — anchor is strictly `role='user'`).
 - §4а: edit of the FIRST message truncates the whole history; the session still exists
-  (is_new=False); workspace files NOT re-injected; instructions injected as usual.
+  (is_new=False); instructions AND workspace files re-injected (ADR-064 §6 closes Q-040-3).
 - §4б: edit with an OPEN tool-loop (pending tool_calls / unclosed barrier) — steps and their
   tool_calls removed, new turn starts from a clean boundary.
 - §3: a new debit on the new message_step_id (uuid4, distinct from the truncated one); NO refund
@@ -469,10 +469,10 @@ async def test_edit_message_step_with_no_user_step_404(
 
 # ==================================================================================================
 # Scenario 7 — edit of the FIRST message: whole history truncated, session still exists
-#              (is_new=False), workspace files NOT re-injected, instructions injected as usual.
+#              (is_new=False); instructions AND workspace files re-injected (ADR-064 §6, Q-040-3).
 # ==================================================================================================
 @pytest.mark.asyncio
-async def test_edit_first_message_truncates_all_no_file_reinjection(
+async def test_edit_first_message_truncates_all_with_file_reinjection_adr064(
     client: AsyncClient,
     db_sessionmaker: async_sessionmaker[AsyncSession],
     fake_anthropic: FakeAnthropicClient,
@@ -509,11 +509,11 @@ async def test_edit_first_message_truncates_all_no_file_reinjection(
     after = await _steps(db_sessionmaker, sid)
     assert after == [("user", new_msid), ("assistant", new_msid)], after
 
-    # instructions injected as usual (decoupled from is_new), but workspace FILES NOT re-injected
-    # (turn-0-only, variant a) on the edited (resume) turn.
+    # instructions injected as usual (decoupled from is_new); ADR-064 §6 (Q-040-3): workspace FILES
+    # are ALSO re-injected on the edited (resume) turn — the model keeps its knowledge base.
     last_call = fake_anthropic.calls[-1]
     assert _INSTRUCTIONS in last_call["system_prompt"]
-    assert _KNOWLEDGE_BLOB not in str(last_call["messages"])
+    assert _KNOWLEDGE_BLOB in str(last_call["messages"])
 
 
 # ==================================================================================================

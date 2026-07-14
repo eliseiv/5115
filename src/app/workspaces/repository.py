@@ -73,22 +73,6 @@ class WorkspacesRepository:
         )
         return row
 
-    async def get_instructions(self, workspace_id: uuid.UUID, user_id: uuid.UUID) -> str | None:
-        """Read ONLY the ``instructions`` column of an owned workspace (ADR-036 §3 continuation).
-
-        Light-weight (single column, no files/content) — used on EVERY ``/chat/tool-result``
-        continuation to re-inject the project instructions into ``system`` (the param, unlike
-        knowledge files, is not part of the message history). Returns None when the workspace no
-        longer exists, is foreign, or its instructions are NULL/empty (caller → base system prompt).
-        """
-        instructions: str | None = await self._session.scalar(
-            select(WorkspaceProject.instructions).where(
-                WorkspaceProject.id == workspace_id,
-                WorkspaceProject.user_id == user_id,
-            )
-        )
-        return instructions
-
     async def list_workspaces(
         self, *, user_id: uuid.UUID, cursor: WorkspaceCursor | None, limit: int
     ) -> WorkspaceListPage:

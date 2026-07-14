@@ -5,6 +5,7 @@
 - Расширяет: [ADR-021](ADR-021-deterministic-step-order-and-block-normalization.md) (монотонный `chat_steps.seq`), [ADR-023](ADR-023-sync-ids-in-chat-response.md) (`messageStepId`/`stepId` наружу)
 - Связано: [ADR-005](ADR-005-idempotency-ledger.md), [ADR-006](ADR-006-credit-billing-and-subscription-grant.md), [ADR-022](ADR-022-optional-project-and-tool-gating.md), [ADR-036](ADR-036-workspaces-implementation.md), [ADR-038](ADR-038-move-chat-to-workspace.md), [ADR-039](ADR-039-optional-message-with-attachments.md)
 - Модуль: [chat-orchestrator](../modules/chat-orchestrator/README.md)
+- **⚠️ Ревизия 2026-07-14 (файлы-знания при edit первого сообщения → [ADR-064](ADR-064-workspace-files-live-reinjection.md)):** §4а «workspace-файлы НЕ переинъектируются (turn-0-only) при `is_new=False`» **снято**: по [ADR-064](ADR-064-workspace-files-live-reinjection.md) подача файлов развязана от `ctx.is_new` (живая переинъекция на каждом ходе), поэтому отредактированный первый ход получает и `instructions`, и **файлы**. Закрывает [Q-040-3](../99-open-questions.md). Прочее в §4а (usage/tool-loop/усечение) — без изменений. Тело §4а не переписано (immutability).
 
 ## Context
 
